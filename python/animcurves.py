@@ -1,0 +1,52 @@
+import numpy as np
+from scipy import interpolate
+
+class AnimCurve:
+	"""A class to represent animation curves"""
+
+	v = np.empty(0) 
+	f = np.empty(0)
+	f_akim = None
+
+	def curveTextToCurveData(self):
+		keys = self.curveText.split(",")
+		self.v = np.empty(len(keys))
+		self.f = np.empty(len(keys))
+		for i, k in enumerate(keys):
+			self.v[i] = k.split("@")[0]
+			self.f[i] = k.split("@")[1]
+		self.f_akim = interpolate.Akima1DInterpolator(self.f, self.v)
+		self.f_int = interpolate.UnivariateSpline(self.f, self.v, k=2, s=0)		
+		#self.f_cubic = interpolate.interp1d(self.f, self.v, kind='cubic')
+		print("\n----\nFrom string %s\ncreated curve with values \t%s \nat frames \t\t\t%s\n----\n" % (self.curveText, self.v, self.f))
+
+	def setCurveText(self, ct):
+		self.curveText = ct
+
+	def getValueAtFrame(self, f):
+		v = self.f_akim(f)
+		return(v)
+
+	def getKeyFrames(self):
+		return(self.f)
+
+	def getKeyValues(self):
+		return(self.v)
+
+	def getFirstKeyFrame(self):
+		return(int(self.f[0]))
+
+	def getLastKeyFrame(self):
+		return(int(self.f[-1:][0]))
+
+	def fillArrayWithValues(self, array):
+		y = np.empty(array.shape)
+		for i,k in enumerate(array.tolist()):
+			if k < self.getFirstKeyFrame():
+				y[i] = self.getValueAtFrame(self.getFirstKeyFrame())
+			elif k > self.getLastKeyFrame():
+				y[i] = self.getValueAtFrame(self.getLastKeyFrame())
+			else:
+				y[i] = self.getValueAtFrame(k)
+		return(y)	
+
