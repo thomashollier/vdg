@@ -1,10 +1,9 @@
-#!/usr/bin/python
+#!/usr/local/bin/python3
 
 from vidstab.VidStab import VidStab
 from vidstab import general_utils
 import numpy as np
-
-import argparse
+import os, argparse
 
 def prepOffset(offset, template):
 	try:
@@ -15,7 +14,7 @@ def prepOffset(offset, template):
 		offset = str(offset)
 		#offsetXStatic = False
 		import sys
-		sys.path.append("/mnt/d/art_Slitscans_IP/bin/python")
+		sys.path.append("../vdg/python")
 		import animcurves
 
 		AC = animcurves.AnimCurve()
@@ -73,19 +72,21 @@ movie_smoothed="%s_%s.MP4"% (base, token)
 print("----Stabilizing video---\ninput movie: %s\nsmooth window: %s \nsmooth windowX: %s\nsmooth windowY: %s\nsmooth windowR: %s\ngenerate Xforms: %s\ntransformDir: %s\noffsets: %s \noffsetX: %s\noffsetY: %s\nlock frame: %s \nlock frame X: %s\nlock frame Y: %s\nlock frame r: %s\noutput movie: %s \n"% ( movie, smoothWindow,XsmoothWindow, YsmoothWindow, RsmoothWindow, generateXforms, transformDir, offsets, offsetX, offsetY, lockFrame, lockFrameX, lockFrameY, lockFrameR, movie_smoothed))
 
 
-#foo = np.loadtxt("%s_trajectory.txt" % base, delimiter=' ')
-#newfoo = prepOffset(offsetX, foo[:,1])
-#print(type(foo))
-# exit()
-
 
 stabilizer = VidStab()
-
 
 ####  Compute transforms
 if generateXforms:
 	print ("---- Generating transforms")
 	stabilizer.gen_transforms(input_path=movie, smoothing_window=smoothWindow, show_progress=True)
+
+	if os.path.exists(transformDir):
+		if not os.path.isdir(transformDir):
+			print("%s exists but is not a directory" % transformDir)
+			exit(0)
+	else:
+		os.mkdir(transformDir)
+
 
 	np.savetxt("%s/%s_transforms.txt" % (transformDir, base), stabilizer.transforms, fmt='%4.8f %4.8f %4.8f')
 	np.savetxt("%s/%s_trajectory.txt" % (transformDir, base), stabilizer.trajectory, fmt='%4.8f %4.8f %4.8f')
