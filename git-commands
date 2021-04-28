@@ -1,5 +1,7 @@
 
-#---  push back local to main
+#---  push back local changes to main
 git push -u origin main
 
+#--- update local repo with online changes
+git pull origin
 
