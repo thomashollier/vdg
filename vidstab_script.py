@@ -2,8 +2,11 @@
 
 from vidstab.VidStab import VidStab
 from vidstab import general_utils
+
 import numpy as np
 import os, argparse
+from scipy.ndimage import gaussian_filter1d
+
 
 def prepOffset(offset, template):
 	try:
@@ -33,6 +36,7 @@ parser.add_argument('-sw', '--smoothWindow', default=240, type=int, dest='smooth
 parser.add_argument('-sx', '--XsmoothWindow', default=-1, type=int, dest='XsmoothWindow', help='number of frame to smooth for X stab')
 parser.add_argument('-sy', '--YsmoothWindow', default=-1, type=int, dest='YsmoothWindow', help='number of frame to smooth for Y stab')
 parser.add_argument('-sr', '--RsmoothWindow', default=-1, type=int, dest='RsmoothWindow', help='number of frame to smooth for R stab')
+parser.add_argument('-gf', '--gaussianFilter', default=False, type=bool, dest='gaussianFilter', help='apply gaussian instead of rolling mean')
 parser.add_argument('-gt', '--generateXforms', default=False, type=bool, dest='generateXforms', help='track movie and generate transforms before stabilizing')
 parser.add_argument('-td', '--transformDir', default="transformCurves", type=str, dest='transformDir', help='directory for keeping the transform curves')
 parser.add_argument('-ox', '--offsetX', default=0, type=str, dest='offsetX', help='offset X value to add to x value of transforms')
@@ -51,6 +55,7 @@ smoothWindow = args.smoothWindow
 XsmoothWindow = args.XsmoothWindow
 YsmoothWindow = args.YsmoothWindow
 RsmoothWindow = args.RsmoothWindow
+gaussianFilter = args.gaussianFilter
 generateXforms = args.generateXforms
 transformDir = args.transformDir
 offsetX= args.offsetX
@@ -69,7 +74,10 @@ movie=inputMovie
 base= movie.replace(".MOV","").replace(".MP4","")
 movie_smoothed="%s_%s.MP4"% (base, token)
 
-print("----Stabilizing video---\ninput movie: %s\nsmooth window: %s \nsmooth windowX: %s\nsmooth windowY: %s\nsmooth windowR: %s\ngenerate Xforms: %s\ntransformDir: %s\noffsets: %s \noffsetX: %s\noffsetY: %s\nlock frame: %s \nlock frame X: %s\nlock frame Y: %s\nlock frame r: %s\noutput movie: %s \n"% ( movie, smoothWindow,XsmoothWindow, YsmoothWindow, RsmoothWindow, generateXforms, transformDir, offsets, offsetX, offsetY, lockFrame, lockFrameX, lockFrameY, lockFrameR, movie_smoothed))
+print("----Stabilizing video---\ninput movie: %s\nsmooth window: %s \nsmooth windowX: %s\nsmooth windowY: %s\nsmooth windowR: %s" % ( movie, smoothWindow,XsmoothWindow, YsmoothWindow, RsmoothWindow, ))
+print("gaussian Filter: %s" % gaussianFilter)
+
+print("generate Xforms: %s\ntransformDir: %s\noffsets: %s \noffsetX: %s\noffsetY: %s\nlock frame: %s \nlock frame X: %s\nlock frame Y: %s\nlock frame r: %s\noutput movie: %s \n"% ( generateXforms, transformDir, offsets, offsetX, offsetY, lockFrame, lockFrameX, lockFrameY, lockFrameR, movie_smoothed))
 
 
 
@@ -147,6 +155,16 @@ else:
 
 print("---- Stabilization curve processed, applying transforms.\n")
 
+if gaussianFilter:
+	print("ignoring offsets and using gaussian filter")
+	test=stabilizer.trajectory.copy()
+	stabilizer.smoothed_trajectory[:,0] = gaussian_filter1d(test[:,0], XsmoothWindow)
+	stabilizer.smoothed_trajectory[:,1] = gaussian_filter1d(test[:,1], YsmoothWindow)
+	stabilizer.smoothed_trajectory[:,2] = gaussian_filter1d(test[:,2], RsmoothWindow)
+
+
 stabilizer.transforms = stabilizer.raw_transforms + (stabilizer.smoothed_trajectory - stabilizer.trajectory)
-stabilizer.apply_transforms(input_path=movie, output_path=movie_smoothed)
+stabilizer.apply_transforms(input_path=movie, output_path=movie_smoothed, output_fourcc="avc1")
+
+exit(movie_smoothed)
 
