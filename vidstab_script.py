@@ -31,6 +31,17 @@ def prepOffset(offset, template):
 
 	return(offsetArray)
 
+def filterCurve(curve, filter, window):
+	if gaussianFilter:
+		print ("\tGaussian smoothing window %s" % window)
+		return gaussian_filter1d(curve, window)
+	else:
+		print ("\tRolling Means smoothing window %s" % window)
+		smoothed_trajectory = general_utils.bfill_rolling_mean(np.stack((curve, curve, curve), axis=1), window)
+		return smoothed_trajectory[:,0]
+		
+
+
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('-sw', '--smoothWindow', default=240, type=int, dest='smoothWindow', help='number of frame to smooth')
 parser.add_argument('-sx', '--XsmoothWindow', default=-1, type=int, dest='XsmoothWindow', help='number of frame to smooth for X stab')
@@ -71,7 +82,7 @@ inputMovie = args.inputMovie
 
 movie=inputMovie
 
-base= movie.replace(".MOV","").replace(".MP4","")
+base= movie.replace(".MOV","").replace(".MP4","").replace(".mov", "")
 movie_smoothed="%s_%s.MP4"% (base, token)
 
 print("----Stabilizing video---\ninput movie: %s\nsmooth window: %s \nsmooth windowX: %s\nsmooth windowY: %s\nsmooth windowR: %s" % ( movie, smoothWindow,XsmoothWindow, YsmoothWindow, RsmoothWindow, ))
@@ -105,21 +116,22 @@ else:
 	print ("---- Reading pre-computed transforms")
 	stabilizer.trajectory = np.loadtxt("%s/%s_trajectory.txt" % (transformDir, base), delimiter=' ')
 	stabilizer.raw_transforms = np.loadtxt("%s/%s_raw_transforms.txt" % (transformDir, base), delimiter=' ')
-	stabilizer.smoothed_trajectory = general_utils.bfill_rolling_mean(stabilizer.trajectory, n=smoothWindow)
 
-####   Replace smoothing window for any channels that have specific values
-if XsmoothWindow > 0:
-	print ("---- Smoothing X transform accross %s frames" % XsmoothWindow)
-	smoothed_trajectoryX = general_utils.bfill_rolling_mean(stabilizer.trajectory, n=XsmoothWindow)
-	stabilizer.smoothed_trajectory[:,0] = smoothed_trajectoryX[:,0]
-if YsmoothWindow > 0:
-	print ("---- Smoothing Y transform accross %s frames" % YsmoothWindow)
-	smoothed_trajectoryY = general_utils.bfill_rolling_mean(stabilizer.trajectory, n=YsmoothWindow)
-	stabilizer.smoothed_trajectory[:,1] = smoothed_trajectoryY[:,1]
-if RsmoothWindow > 0:
-	print ("---- Smoothing R transform accross %s frames" % RsmoothWindow)
-	smoothed_trajectoryR = general_utils.bfill_rolling_mean(stabilizer.trajectory, n=RsmoothWindow)
-	stabilizer.smoothed_trajectory[:,2] = smoothed_trajectoryR[:,2]
+
+####   Smooth curves
+stabilizer.smoothed_trajectory = stabilizer.trajectory.copy()
+
+XsmoothWindow = smoothWindow if ( XsmoothWindow == -1 ) else XsmoothWindow
+print ("---- Smoothing X transform accross %s frames with filter %s"  % (XsmoothWindow, "gaussianFilter" if gaussianFilter else "rolling mean filter"))
+stabilizer.smoothed_trajectory[:,0] = filterCurve(stabilizer.trajectory[:,0], gaussianFilter, XsmoothWindow)
+
+YsmoothWindow = smoothWindow if YsmoothWindow == -1 else YsmoothWindow
+print ("---- Smoothing Y transform accross %s frames with filter %s"  % (YsmoothWindow, "gaussianFilter" if gaussianFilter else "rolling mean filter"))
+stabilizer.smoothed_trajectory[:,1] = filterCurve(stabilizer.trajectory[:,1], gaussianFilter, YsmoothWindow)
+
+RsmoothWindow = smoothWindow if RsmoothWindow == -1 else RsmoothWindow
+print ("---- Smoothing R transform accross %s frames with filter %s"  % (RsmoothWindow, "gaussianFilter" if gaussianFilter else "rolling mean filter"))
+stabilizer.smoothed_trajectory[:,2] = filterCurve(stabilizer.trajectory[:,2], gaussianFilter, RsmoothWindow)
 
 
 ####   Replace smoothed version with locked if specified
@@ -154,13 +166,6 @@ else:
 		stabilizer.smoothed_trajectory[:,2] = np.add(stabilizer.smoothed_trajectory[:,2], prepOffset(offsetR, stabilizer.smoothed_trajectory[:,2]))
 
 print("---- Stabilization curve processed, applying transforms.\n")
-
-if gaussianFilter:
-	print("ignoring offsets and using gaussian filter")
-	test=stabilizer.trajectory.copy()
-	stabilizer.smoothed_trajectory[:,0] = gaussian_filter1d(test[:,0], XsmoothWindow)
-	stabilizer.smoothed_trajectory[:,1] = gaussian_filter1d(test[:,1], YsmoothWindow)
-	stabilizer.smoothed_trajectory[:,2] = gaussian_filter1d(test[:,2], RsmoothWindow)
 
 
 stabilizer.transforms = stabilizer.raw_transforms + (stabilizer.smoothed_trajectory - stabilizer.trajectory)
