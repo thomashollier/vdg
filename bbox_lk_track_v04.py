@@ -9,17 +9,13 @@ import argparse
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('-ss', '--startFrame', default=1, type=int, dest='startFrame', help='first frame of the stabilize')  
 parser.add_argument('-ef', '--endFrame', default=1, type=int, dest='endFrame', help='first frame of the stabilize')  
-#parser.add_argument('-bbx', '--boundingBoxx', default="100:800:1:175", dest='bbox', help='x0:x1:y0:y1', action='append', nargs='*')  
-#parser.add_argument('-bb', '--boundingBox', default=[], dest='bbox', help='x0:x1:y0:y1', action='append')  
+parser.add_argument('-bb', '--boundingBox', default='', dest='bbox', help='string defining one or more bboxes: x1min:x1max:y1min:y1max,x2min:x2max:y2min:y2max')
 parser.add_argument('-wo', '--writeOutput', default=False, type=bool, dest='writeOutput', help='first frame of the stabilize')  
 parser.add_argument('-wx', '--writeXforms', default=False, type=bool, dest='writeXforms', help='first frame of the stabilize')  
 parser.add_argument('-sp', '--showPoints', dest='showPoints', action='store_true', help='draw tracking points')  
 parser.add_argument('-ff', '--findFeatures', dest='findFeatures', action='store_true', help='force find new features on each frame')  
 parser.add_argument('-fq', '--featureQuality', default=.3, type=float, dest='featureQuality', help='first frame of the stabilize')  
 parser.add_argument('-cl', '--clipLimit', default=2, type=float, dest='clipLimit', help='first frame of the stabilize')  
-parser.add_argument('-bb', dest='bbox',
-                    default=str,
-                    help='Add repeated values to a list',)
 
 parser.add_argument('inputMovie', help='input movie')
 
@@ -104,7 +100,6 @@ def read_frame(movie):
 	return(ret, frame)
 		
 def prep_frame(frame, bbox):
-	print(bbox, type(bbox))
 	frameCrop = frame[bbox[2]:bbox[3], bbox[0]:bbox[1]]
 	frameGray = cv2.cvtColor(frameCrop, cv2.COLOR_BGR2GRAY)
 	return(frameGray)
@@ -179,7 +174,7 @@ trs = sum = sumW = [0,0,0]
 
 i = 1
 while True:
-	if i == endFrame:
+	if i == endFrame - startFrame:
 		break
 
 	# use the previous frame as the source 
@@ -193,7 +188,6 @@ while True:
 		break
 	# apply the current source frame transform to the current dest frame
 	dstGray = prep_frame(dstFrame, bbox)
-
 
 	
 	# find the features from source frame in the destination frame
@@ -216,7 +210,7 @@ while True:
 	cv2.imshow("crop preview", srcFrame[bbox[2]:bbox[3], bbox[0]:bbox[1]])
 	#cv2.imshow("gray",  dstGray)
 	#cv2.imshow("gray2",  dstStabGray)
-	cv2.imshow("full",  cv2.resize(dstStab,(960,540)))
+	#cv2.imshow("full",  cv2.resize(dstStab,(960,540)))
 	outputMovie.write(dstFrameWW) if writeOutput else None
 	transforms.append(trs)
 	trajectory.append(sum)
