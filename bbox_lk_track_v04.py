@@ -1,4 +1,5 @@
-#!/usr/bin/python
+#!/usr/local/bin/python3
+
 import sys
 import cv2
 import numpy as np
@@ -16,8 +17,8 @@ parser.add_argument('-sp', '--showPoints', dest='showPoints', action='store_true
 parser.add_argument('-ff', '--findFeatures', dest='findFeatures', action='store_true', help='force find new features on each frame')  
 parser.add_argument('-fq', '--featureQuality', default=.3, type=float, dest='featureQuality', help='first frame of the stabilize')  
 parser.add_argument('-cl', '--clipLimit', default=2, type=float, dest='clipLimit', help='first frame of the stabilize')  
-parser.add_argument('-bb', action='append', dest='bbox',
-                    default=[],
+parser.add_argument('-bb', dest='bbox',
+                    default=str,
                     help='Add repeated values to a list',)
 
 parser.add_argument('inputMovie', help='input movie')
@@ -29,7 +30,8 @@ print(args.bbox)
 
 startFrame = args.startFrame
 endFrame = args.endFrame
-bbox= tuple([tuple([int(x) for x in y.split(":")]) for y in args.bbox])
+bbox= [[int(x) for x in y.split(":")] for y in args.bbox.split(',')]
+bbox = tuple(bbox[0])
 writeOutput = args.writeOutput
 writeXforms = args.writeXforms
 showPoints = args.showPoints
@@ -102,6 +104,7 @@ def read_frame(movie):
 	return(ret, frame)
 		
 def prep_frame(frame, bbox):
+	print(bbox, type(bbox))
 	frameCrop = frame[bbox[2]:bbox[3], bbox[0]:bbox[1]]
 	frameGray = cv2.cvtColor(frameCrop, cv2.COLOR_BGR2GRAY)
 	return(frameGray)
@@ -210,8 +213,9 @@ while True:
 	dstStabGray = prep_frame(dstStab, bbox)
 	
 
-	cv2.imshow("gray",  dstGray)
-	cv2.imshow("gray2",  dstStabGray)
+	cv2.imshow("crop preview", srcFrame[bbox[2]:bbox[3], bbox[0]:bbox[1]])
+	#cv2.imshow("gray",  dstGray)
+	#cv2.imshow("gray2",  dstStabGray)
 	cv2.imshow("full",  cv2.resize(dstStab,(960,540)))
 	outputMovie.write(dstFrameWW) if writeOutput else None
 	transforms.append(trs)
