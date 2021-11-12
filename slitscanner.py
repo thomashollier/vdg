@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/local/bin/python3
 
 import cv2
 import numpy as np
@@ -82,13 +82,46 @@ while currentFrame < endFrame:
 	if _rotate:
 		im = cv2.transpose(im)
 
+	angle = currentFrame * .0133 
+	newWidth = movieWidth * np.abs((np.cos(angle))) + movieHeight * np.abs((np.sin(angle)))
+	newHeight = movieWidth * np.abs((np.sin(angle))) + movieHeight * np.abs((np.cos(angle)))
+
+	M_rot = cv2.getRotationMatrix2D(((movieWidth-1)*.5, (movieHeight-1)*.5), np.degrees(angle), 1.0)
+	M_rot = np.vstack([M_rot,[0, 0, 1]])
+
+	scale = min(movieHeight/newHeight, movieWidth/newWidth)
+	if movieHeight/newHeight >  movieWidth/newWidth:
+		print("new height ration is bigger")
+
+	M_sca = np.array([[scale, 0, .5*(movieWidth-movieWidth*scale) ], [0, scale, .5*(movieHeight-movieHeight*scale)], [0,0,0]])
+	M_final = M_sca.dot(M_rot)
+	im = cv2.warpAffine(im, M_final[0:2], (movieWidth, movieHeight) )
+	
+
+	scaledHeight = movieHeight * scale
+	sin = np.sin(angle)
+
+	print(sin, movieHeight, scaledHeight)
+	print(movieWidth, movieHeight)
+	
+
+	diff = (movieHeight*.5)-(scaledHeight-movieHeight*.5)
+	diff = (movieHeight*.5)-(scaledHeight)
+	cv2.circle(im, (0, int(sin*movieHeight)), 10, [222,0,0], -1 )
+	print(movieWidth)
+
+
+
 
 #	ratio = scanline/_outputWidth
 #	multer = (np.cos(2*np.pi*ratio)*.5+.5)
 #	M = np.float32([[1,0,np.sin(scanline*.02)*100*multer],[0,1,np.cos(scanline*0.02)*100*multer]])
 #	im = cv2.warpAffine(im,M,(movieWidth,movieHeight))
 
-
+	cv2.imshow('im',im)
+	cv2.waitKey(0)
+#	k = cv2.waitKey(1) & 0xff
+#	if k == 27 : break
 
 	sliver = im[_scanlineIndex:_scanlineIndex+1,0:movieWidth]
 	dst[scanline:scanline+1,0:movieWidth] = sliver
