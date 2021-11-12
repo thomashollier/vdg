@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/local/bin/python3
 import sys
 import cv2
 import numpy as np
@@ -181,10 +181,10 @@ while True:
 	except:
 		pass
 	# show
-	cv2.imshow("Tracking",  cv2.resize(dstFrameW, (1280,720)))          
+	#cv2.imshow("Tracking",  cv2.resize(dstFrameW, (1280,720)))          
 	cv2.imshow("gray",  srcGrayW)
-	cv2.imshow("Tracking W",  dstFrameW[1:300,1:800])          
-	cv2.imshow("Tracking WW",  dstFrameWW[1:300,1:800])          
+	#cv2.imshow("Tracking W",  dstFrameW[1:300,1:800])          
+	#cv2.imshow("Tracking WW",  dstFrameWW[1:300,1:800])          
 	outputMovie.write(dstFrameWW) if writeOutput else None
 	transforms.append(trs)
 	trajectory.append(sum)
