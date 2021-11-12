@@ -1,4 +1,6 @@
-#!/usr/bin/python
+#!/usr/local/bin/python3
+
+## #!/usr/bin/python
 
 import cv2
 import numpy as np
@@ -24,7 +26,7 @@ token= args.token
 inputMovie = args.inputMovie
 
 
-output = inputMovie.replace(".mov", "_%s.PNG" % token).replace(".MP4", "_%s.PNG" % token)
+output = inputMovie.replace(".mov", "_%s.PNG" % token).replace(".MP4", "_%s.PNG" % token).replace(".mp4", "_%s.PNG" % token)
 print(output)
 
 cap = cv2.VideoCapture(inputMovie)
