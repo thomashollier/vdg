@@ -7,15 +7,15 @@ import time
 import argparse
 
 parser = argparse.ArgumentParser(description='Process some integers.')
-parser.add_argument('-ss', '--startFrame', default=1, type=int, dest='startFrame', help='first frame of the stabilize')  
-parser.add_argument('-ef', '--endFrame', default=1, type=int, dest='endFrame', help='first frame of the stabilize')  
+parser.add_argument('-fs', '--frameStart', default=1, type=int, dest='startFrame', help='first frame of the stabilize')  
+parser.add_argument('-fe', '--frameEnd', default=1, type=int, dest='endFrame', help='first frame of the stabilize')  
 parser.add_argument('-bb', '--boundingBox', default='', dest='bbox', help='string defining one or more bboxes: x1min:x1max:y1min:y1max,x2min:x2max:y2min:y2max')
-parser.add_argument('-wo', '--writeOutput', default=False, type=bool, dest='writeOutput', help='first frame of the stabilize')  
+parser.add_argument('-wo', '--writeOutput', action='store_true', dest='writeOutput', help='first frame of the stabilize')
 parser.add_argument('-wx', '--writeXforms', default=False, type=bool, dest='writeXforms', help='first frame of the stabilize')  
 parser.add_argument('-sp', '--showPoints', dest='showPoints', action='store_true', help='draw tracking points')  
 parser.add_argument('-ff', '--findFeatures', dest='findFeatures', action='store_true', help='force find new features on each frame')  
 parser.add_argument('-fq', '--featureQuality', default=.3, type=float, dest='featureQuality', help='first frame of the stabilize')  
-parser.add_argument('-cl', '--clipLimit', default=2, type=float, dest='clipLimit', help='first frame of the stabilize')  
+parser.add_argument('-cl', '--clipLimit', default=5, type=float, dest='clipLimit', help='first frame of the stabilize')  
 
 parser.add_argument('inputMovie', help='input movie')
 
@@ -58,9 +58,9 @@ feature_params = dict( maxCorners = 200,
 
 # Parameters for Lucas Kanade optical flow
 ####
-lk_params = dict( winSize  = (40,40),
-                  maxLevel = 2,
-                  criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+lk_params = dict( winSize  = (80,80),
+                  maxLevel = 4,
+                  criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.003))
 
 clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=(8,8))
 
@@ -99,17 +99,43 @@ def read_frame(movie):
 	ret, frame = movie.read()
 	return(ret, frame)
 		
+
 def prep_frame(frame, bbox):
 	frameCrop = frame[bbox[2]:bbox[3], bbox[0]:bbox[1]]
 	frameGray = cv2.cvtColor(frameCrop, cv2.COLOR_BGR2GRAY)
+	#frameGray = np.clip(frameGray * 2,0,253)
+	#frameGray = clahePass(frameGray)
+	#frameGray = medianPass(frameGray)
+	#frameGray = cv2.resize(frameGray, (int((bbox[1]-bbox[0])*.5), int((bbox[3]-bbox[2])*.5)))
+	#frameGray = filterit(frameGray)
 	return(frameGray)
 
-def filterit(frame):
+def boxPass(frame):
 	sliding_window_size_x = 5
 	sliding_window_size_y = 5
 	mean_filter_kernel = np.ones((sliding_window_size_x,sliding_window_size_y),np.float32)/(sliding_window_size_x*sliding_window_size_y)
 	filtered_image = cv2.filter2D(frame,-1,mean_filter_kernel)
 	return filtered_image
+
+def gaussianPass(frame):
+	#sliding_window_size_x = 5
+	#sliding_window_size_y = 5
+	#mean_filter_kernel = np.ones((sliding_window_size_x,sliding_window_size_y),np.float32)/(sliding_window_size_x*sliding_window_size_y)
+	#filtered_image = cv2.filter2D(frame,-1,mean_filter_kernel)
+	filtered_image = cv2.GaussianBlur(frame,(5,5),.6)
+	return filtered_image
+
+def medianPass(frame):
+	filtered_image = cv2.medianBlur(frame,3)
+	return filtered_image
+
+def histequalPass(frame):
+	dst = cv2.equalizeHist(frame)
+	return dst
+
+def clahePass(frame):
+	frame = clahe.apply(frame)	
+	return frame
 
 def find_features(frame):
 	pointsSrcOut = cv2.goodFeaturesToTrack(frame, mask = None, **feature_params)
@@ -126,11 +152,22 @@ def track_frame(src, dst, pointsSrcInput, findFeatures):
 	except:
 		mtrx = np.array([[1, 0, 0], [0, 1, 0]], np.float64)
 		err = np.array([[100],[100]])
-	if cv2.mean(err)[0] > 30:
+	print(cv2.mean(err)[0])
+	if cv2.mean(err)[0] > 99:
 		mtrx = np.array([[1, 0, 0], [0, 1, 0]], np.float64)
-		err = np.array([[100],[100]])
-		print("Tracking error too high, finding new points")
-		mtrx, pointsDstOutput, err = track_frame(src, dst, pointsSrcInput, True)
+		print("Tracking error too high: %s , not tracking" % cv2.mean(err)[0])
+		pointsDstOutput = pointsSrcInput
+	elif cv2.mean(err)[0]  > 50:
+		while cv2.mean(err)[0]  > 5:
+			mtrx = np.array([[1, 0, 0], [0, 1, 0]], np.float64)
+			err = np.array([[100],[100]])
+			print("Tracking error too high: %s , finding new points" % cv2.mean(err)[0])
+			pointsSrcInput = find_features(src)
+			mtrx, pointsDstOutput, err = track_frame(src, dst, pointsSrcInput, True)
+
+
+
+
 	return(mtrx, pointsDstOutput, err)
 
 def fix_bump(prev, curr, thresh):
@@ -144,7 +181,7 @@ def fix_bump(prev, curr, thresh):
 	
 
 ######################
-outputMovieFile = inputMovie.replace(".MP4", "_stab.MP4").replace(".MOV", "_stab.MP4")   
+outputMovieFile = inputMovie.replace(".MP4", "_stab.MP4").replace(".MOV", "_stab.MP4").replace(".mov", "_stab.MP4")
 transformFile =   inputMovie.replace(".MP4", "_xforms.txt").replace(".MOV", "_xforms.txt") 
 trajectoryFile =  inputMovie.replace(".MP4", "_trajec.txt").replace(".MOV", "_trajec.txt")
 transforms = []
@@ -153,19 +190,22 @@ trajectory = []
 movie = cv2.VideoCapture(inputMovie)
 movieHeight = int(movie.get(cv2.CAP_PROP_FRAME_HEIGHT))
 movieWidth = int(movie.get(cv2.CAP_PROP_FRAME_WIDTH))
+ret, dstFrame = read_frame(movie)
 print("input movie size is: %s %s"% (movieHeight, movieWidth))
+print("loaded frame size is: %s %s"% (dstFrame.shape[0], dstFrame.shape[1]))
 outputMovie = cv2.VideoWriter(
 	outputMovieFile,
 	cv2.VideoWriter_fourcc('M','P','4','V'), 120, 
 	(movieWidth,movieHeight)
 ) if writeOutput else None
 
-#frameRange = get_movie_range(movie)
-#jump_to_frame(startFrame, movie)
+frameRange = get_movie_range(movie)
+jump_to_frame(startFrame, movie)
 
 
 # read the first frame and find some points to track
 ret, dstFrame = read_frame(movie)
+print(dstFrame.shape)
 dstGray = prep_frame(dstFrame, bbox)
 dstPoints = find_features(dstGray)
 mtrx = np.array([[1, 0, 0], [0, 1, 0]], np.float64)
@@ -208,10 +248,10 @@ while True:
 	
 
 	cv2.imshow("crop preview", srcFrame[bbox[2]:bbox[3], bbox[0]:bbox[1]])
-	#cv2.imshow("gray",  dstGray)
+	cv2.imshow("gray",  dstGray)
 	#cv2.imshow("gray2",  dstStabGray)
-	#cv2.imshow("full",  cv2.resize(dstStab,(960,540)))
-	outputMovie.write(dstFrameWW) if writeOutput else None
+	cv2.imshow("stab",  cv2.resize(dstStab,(int(movieWidth*.5),int(movieHeight*.5))))
+	outputMovie.write(dstStab) if writeOutput else None
 	transforms.append(trs)
 	trajectory.append(sum)
 	#
