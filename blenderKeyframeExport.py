@@ -1,6 +1,7 @@
-movie='11272021104741.mov'
-track='11272021104741_track_01'
-filepath='/Users/thomas/Documents/slitscans/20211127_newyork1/11272021104741_track_01.crv'
+prefix='11222021173801'
+movie='%s.mov' % prefix
+track='%s_track_01' % prefix
+filepath='/Users/thomas/Documents/slitscans/20211122_pier/%s_track_01.crv' % prefix
 
 # movie clip that the track is done to
 clip = bpy.data.movieclips[movie]
@@ -11,13 +12,17 @@ markers=track.markers
 
 f = open(filepath, 'w')
 for k,v in markers.items():
-	s = ("%s %s %s\n"% (k,v.co[0],v.co[1]))
+	s = ("%s %s %s\n"% (v.frame,v.co[0],v.co[1]))
 	f.write(s)
+
 f.close()
+print("%s done")
 
 
 
-'''
+
+
+'
 # Below was a technique that required tracks to be 
 # baked on null object animation
 # not a good way...
