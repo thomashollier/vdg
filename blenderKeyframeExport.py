@@ -1,4 +1,4 @@
-prefix='11222021173801'
+prefix='11222021170021'
 movie='%s.mov' % prefix
 track='%s_track_01' % prefix
 filepath='/Users/thomas/Documents/slitscans/20211122_pier/%s_track_01.crv' % prefix
@@ -17,6 +17,20 @@ for k,v in markers.items():
 
 f.close()
 print("%s done")
+
+
+for clip in [bpy.data.movieclips['IMG_2023.mov']]:
+	for track in clip.tracking.tracks:
+		filepath = clip.filepath
+		filename = filepath.replace('.mov', '_%s.crv'%track.name)
+		filename = "/Users/thomas/Documents/slitscans/20210828_pierLights/%s" % filename
+		f = open(filename, 'w')
+		for k,v in track.markers.items():
+	        	s = ("%s %s %s\n"% (v.frame,v.co[0],v.co[1]))
+        		f.write(s)
+		f.close()
+
+
 
 
 
