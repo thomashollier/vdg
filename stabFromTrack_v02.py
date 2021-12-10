@@ -4,7 +4,8 @@ import sys, argparse, re, time
 import cv2
 import numpy as np
 
-parser = argparse.ArgumentParser(description='Process some integers.')
+
+parser = argparse.ArgumentParser(description="Stabilize a movie file based on values in a data file in the following format:\n\tFRAME X Y.  \nFRAME is the frame number integer, X and Y are normalized floats. Blender\'s Y coordinate is flipped so if image has the same orientation in blender as it does in openCV view, yFlip argument is needed")
 parser.add_argument('-fs', '--frameStart', default=1, type=int, dest='startFrame', help='first frame of the stabilize')  
 parser.add_argument('-fe', '--frameEnd',default=1, type=int, dest='endFrame', help='first frame of the stabilize')   
 parser.add_argument('-td', '--trackData',default=1, type=str, dest='trackData', help='frame, X and Y values')   
@@ -12,8 +13,10 @@ parser.add_argument('-xf', '--xFlip', action='store_true', dest='xFlip', help='i
 parser.add_argument('-xr', '--xReverse', action='store_true',dest='xReverse', help='')   
 parser.add_argument('-yf', '--yFlip', action='store_true', dest='yFlip', help='invert the y value in case image was tracked with vertical flip')   
 parser.add_argument('-yr', '--yReverse', action='store_true', dest='yReverse', help='frame, X and Y values')   
+parser.add_argument('-db', '--debug', action='store_true', dest='debug', help='frame, X and Y values')   
+parser.add_argument('-rf', '--refFrame',default=-1, type=int, dest='refFrame', help='frame to use as reference (default is "frameStart"')   
+parser.add_argument('-tk', '--token',default="stab", type=str, dest='token', help='token filename extension')   
 parser.add_argument('-wo', '--writeOutput', action='store_true', dest='writeOutput', help='first frame of the stabilize')
-
 parser.add_argument('inputMovie', help='input movie')
 
 
@@ -28,11 +31,16 @@ xFlip = args.xFlip
 xReverse = args.xReverse
 yFlip = args.yFlip
 yReverse = args.yReverse
+debug = args.debug
+refFrame = args.refFrame
+token = args.token
 inputMovie = args.inputMovie 
 
 patt = re.compile('(.mov)|(.MP4)|(.MOV)|(.mp4)')
-outputMovieFile = re.sub(patt, '_stab.mp4', inputMovie)
+outputMovieFile = re.sub(patt, '_%s.mp4' % token, inputMovie)
 
+if refFrame == -1:
+	refFrame = startFrame
 
 print("\n")
 print("inputMovie: %s" % inputMovie)
@@ -42,6 +50,7 @@ print("xFlip: %s" % xFlip)
 print("xReverse: %s" % xReverse)
 print("yFlip: %s" % yFlip)
 print("yReverse: %s" % yReverse)
+print("refFrame: %s" % refFrame)
 print("outputMovie: %s" % outputMovieFile)
 
 
@@ -94,7 +103,7 @@ def getMatrix(trackerDict, frame, frameRef, w, h):
 		rx = r[0]
 		vy = v[1]
 		ry = r[1]
-		
+
 	if xReverse:
 		X = (vx-rx)*w
 	else:
@@ -136,6 +145,7 @@ if ret != True:
 print("loaded frame height by width is: \t%s X %s"% (srcFrame.shape[0], srcFrame.shape[1]))
 
 if movieHeight > movieWidth:
+	print("Portrait mode is True")
 	portrait = True
 else:
 	portrait = False
@@ -154,8 +164,6 @@ jump_to_frame(startFrame, movie)
 
 trackingData = readTrackerData(trackData)
 
-refFrame = startFrame 
-
 i = startFrame
 
 while i < endFrame:
@@ -167,11 +175,15 @@ while i < endFrame:
 
 	mtx = getMatrix(trackingData, i+1, refFrame, movieWidth, movieHeight)
 	x,y = getXY(trackingData, i+1, movieWidth, movieHeight)
-	if True:
+	if not debug:
 		dstStab = cv2.warpAffine(srcFrame, mtx, (movieWidth,movieHeight))
-		cv2.imshow("stab",  cv2.resize(dstStab,(int(movieWidth*.25),int(movieHeight*.25))))
+		dstStabShow = cv2.resize(dstStab,(int(movieWidth*.25),int(movieHeight*.25)))
+		for x in range(50,dstStabShow.shape[0],50):
+			for y in range(50,dstStabShow.shape[1],50):
+				cv2.circle(dstStabShow,(y,x),3,(255,0,0),-1)
+		cv2.imshow("stab",  dstStabShow)
 	else:
-		cv2.circle(srcFrame,(x,y),30,(255,0,0),-1)
+		cv2.circle(srcFrame,(x,y),10,(255,0,0),-1)
 		cv2.imshow("stab",  cv2.resize(srcFrame,(int(movieWidth*.25),int(movieHeight*.25))))
 		dstStab = srcFrame
 
