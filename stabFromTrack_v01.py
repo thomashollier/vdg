@@ -53,7 +53,8 @@ def readTrackerData(myFile):
 	for v in tracker:
 		k, x, y = v.rstrip().split()
 		x = float(x)
-		y = 1.0-float(y)
+		#y = 1.0-float(y)
+		y = float(y)
 		trackerDict[k]=(x,y)
 
 	return trackerDict
@@ -61,7 +62,7 @@ def readTrackerData(myFile):
 def getMatrix(trackerDict, frame, frameRef, w, h):
 	v = trackerDict[str(frame)]
 	r = trackerDict[str(frameRef)]
-	X = (r[0]-v[0])*w
+	X = (v[0]-r[0])*w
 	Y = (r[1]-v[1])*h
 	M = np.float32([[1,0,X],[0,1,Y]])
 	return M
@@ -105,7 +106,7 @@ jump_to_frame(startFrame, movie)
 
 trackingData = readTrackerData(trackData)
 
-refFrame = 2
+refFrame = startFrame 
 
 i = startFrame
 
