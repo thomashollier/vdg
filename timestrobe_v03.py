@@ -106,7 +106,7 @@ if mode == 1:
 		frameCurrent = frameCurrent + 1
 		sys.stdout.write("\rframe %4d of %s" % (frameCurrent-frameStart, frameRange))
 		sys.stdout.flush()
-		if frameCurrent == frameStart + 5:
+		if frameCurrent == frameStart + 500:
 			break
 	background = background /frameRange
 
