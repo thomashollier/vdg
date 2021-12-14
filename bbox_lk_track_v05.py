@@ -9,7 +9,7 @@ import argparse
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('-fs', '--frameStart', default=1, type=int, dest='startFrame', help='first frame of the stabilize')  
 parser.add_argument('-fe', '--frameEnd', default=1, type=int, dest='endFrame', help='first frame of the stabilize')  
-parser.add_argument('-bb', '--boundingBox', default='', dest='bbox', help='string defining one or more bboxes: x1min:x1max:y1min:y1max,x2min:x2max:y2min:y2max')
+parser.add_argument('-bb', '--boundingBox', default='0:0:0:0', dest='bbox', help='string defining one or more bboxes: x1min:x1max:y1min:y1max,x2min:x2max:y2min:y2max')
 parser.add_argument('-wo', '--writeOutput', action='store_true', dest='writeOutput', help='first frame of the stabilize')
 parser.add_argument('-wx', '--writeXforms', default=False, type=bool, dest='writeXforms', help='first frame of the stabilize')  
 parser.add_argument('-sp', '--showPoints', dest='showPoints', action='store_true', help='draw tracking points')  
@@ -22,7 +22,6 @@ parser.add_argument('inputMovie', help='input movie')
 
 
 args = parser.parse_args()
-print(args.bbox)
 
 startFrame = args.startFrame
 endFrame = args.endFrame
@@ -36,7 +35,6 @@ featureQuality = args.featureQuality
 clipLimit = args.clipLimit
 inputMovie = args.inputMovie 
 
-print(bbox)
 print("inputMovie: %s" % inputMovie)
 print("startFrame: %s" % startFrame)
 print("endFrame: %s" % endFrame)
@@ -52,16 +50,18 @@ print("clipLimit: %s" % clipLimit)
 # Parameters for ShiTomasi corner detection
 ####
 # a higher min distance forces meore spread out points
-feature_params = dict( maxCorners = 100,
-                       qualityLevel = featureQuality,
-                       minDistance = 30,
-                       blockSize = 30 )
+feature_params = dict( maxCorners = 200,
+		       qualityLevel = featureQuality,
+		       minDistance = 30,
+		       blockSize = 70 ,
+			useHarrisDetector=False,
+			k=.04)
 
 # Parameters for Lucas Kanade optical flow
 ####
 lk_params = dict( winSize  = (30,30),
-                  maxLevel = 4,
-                  criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 80, 0.1))
+		  maxLevel = 4,
+		  criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 80, 0.003))
 
 clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=(8,8))
 
@@ -150,29 +150,12 @@ def track_frame(src, dst, pointsSrcInput, findFeatures):
 	except:
 		mtrx = np.array([[1, 0, 0], [0, 1, 0]], np.float64)
 		err = np.array([[100],[100]])
-	print(cv2.mean(err)[0])
-	if cv2.mean(err)[0] > 99:
-		mtrx = np.array([[1, 0, 0], [0, 1, 0]], np.float64)
-		print("Tracking error too high: %s , not tracking" % cv2.mean(err)[0])
-		pointsDstOutput = pointsSrcInput
-	elif cv2.mean(err)[0]  > 50:
-		while cv2.mean(err)[0]  > 5:
-			mtrx = np.array([[1, 0, 0], [0, 1, 0]], np.float64)
-			err = np.array([[100],[100]])
-			print("Tracking error too high: %s , finding new points" % cv2.mean(err)[0])
-			pointsSrcInput = find_features(src)
-			mtrx, pointsDstOutput, err = track_frame(src, dst, pointsSrcInput, True)
-
-
-
-
 	return(mtrx, pointsDstOutput, err)
 
 def fix_bump(prev, curr, thresh):
 	v = [prev[0]-curr[0], prev[1]-curr[1], 500*(prev[2]-curr[2])]
 	mag = np.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2])
 	if mag > thresh:
-		#print("clamp %s" % mag)
 		return prev
 	else:
 		return curr
@@ -201,23 +184,55 @@ frameRange = get_movie_range(movie)
 jump_to_frame(startFrame, movie)
 
 
+
+
+
+
 # read the first frame and find some points to track
 ret, dstFrame = read_frame(movie)
-print(dstFrame.shape)
+
+
+############################
+#
+#       Create bounding box
+#
+############################
+while True:
+	factor = 4.0
+	shp = dstFrame.shape
+	resized = cv2.resize(dstFrame,(int(movieWidth/factor),int(movieHeight/factor)))
+	cv2.imshow("Frame", resized)
+
+	box = cv2.selectROI('Frame', resized, fromCenter=False,showCrosshair=True)
+	print(box)
+	bbox = (int(box[0]*factor), int((box[0]+box[2])*factor), int(box[1]*factor), int((box[1]+box[3])*factor))
+	print(bbox)
+	print("Press q to quit selecting boxes and start tracking")
+	print("Press any other key to select next object")
+	k = cv2.waitKey(0) & 0xFF
+	if (k == 113):  # q is pressed
+		cv2.destroyWindow('Frame')
+		break
+
 dstGray = prep_frame(dstFrame, bbox)
 dstPoints = find_features(dstGray)
 mtrx = np.array([[1, 0, 0], [0, 1, 0]], np.float64)
 trs = sum = sumW = [0,0,0]
 
 
+dstStab = dstFrame
+dstStabGray = dstGray
+srcPoints = dstPoints
+
 i = 1
 while True:
+	print(i)
 	if i == endFrame - startFrame:
 		break
 
 	# use the previous frame as the source 
-	srcFrame = dstFrame
-	srcGray = dstGray
+	srcFrame = dstStab
+	srcGray = dstStabGray
 	srcPoints = dstPoints
 	
 	# read a new frame and make that the destination frame
@@ -233,22 +248,32 @@ while True:
 	trs = matrix_to_transforms(mtrx)
 	# the following zeros transforms if there is to much change
 	if abs(trs[2])>np.radians(1):
-		print(trs[2])	
+		print("trs[2] is: ",trs[2])	
 		trs=[0,0,0]
 	sum = [sum[0]-trs[0], sum[1]-trs[1], sum[2]-trs[2]]
 	if showPoints:
+		for p in srcPoints:
+			cv2.circle(dstGray, (int(p[0][0]), int(p[0][1])), 2, [255,0,0])
 		for p in dstPoints:
-			cv2.circle(dstGray, (int(p[0][0]), int(p[0][1])), 4, [255,0,0])
+			cv2.circle(dstGray, (int(p[0][0]), int(p[0][1])), 5, [255,0,0])
 	
 	mtrxSum = transforms_to_matrix(sum)
 	dstStab = cv2.warpAffine(dstFrame, mtrxSum, (movieWidth,movieHeight)) 
 	dstStabGray = prep_frame(dstStab, bbox)
-	
+
+	M = np.float32([
+        	[1,0, 200],
+        	[0, 1, 200]
+	])
+
+	shifted = cv2.warpAffine(dstFrame, M, (dstFrame.shape[1], dstFrame.shape[0]))
+		
 
 	#cv2.imshow("crop preview", srcFrame[bbox[2]:bbox[3], bbox[0]:bbox[1]])
 	cv2.imshow("gray",  dstGray)
 	#cv2.imshow("gray2",  dstStabGray)
-	cv2.imshow("stab",  cv2.resize(dstStab,(int(movieWidth*.5),int(movieHeight*.5))))
+	#cv2.imshow("stab",  cv2.resize(dstStab,(int(movieWidth*.5),int(movieHeight*.5))))
+	cv2.imshow("stab",  cv2.resize(shifted,(int(movieWidth*.5),int(movieHeight*.5))))
 	outputMovie.write(dstStab) if writeOutput else None
 	transforms.append(trs)
 	trajectory.append(sum)
