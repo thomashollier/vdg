@@ -23,7 +23,7 @@ parser.add_argument('-c', '--clahe', action='store_true', dest='clahe', help='cl
 parser.add_argument('-cc', '--claheClip', default=40, type=float, dest='claheClip', help='clahe contrast clip')
 parser.add_argument('-cs', '--claheGrid', default=8, type=int, dest='claheGrid', help='clahe contrast grid size')
 parser.add_argument('-cb', '--claheBefore', action='store_true', dest='claheBefore', help='apply clahe filter to images before adding them')
-parser.add_argument('-tk', '--token', default="avg", type=str, dest='token', help='file name token to add to input file name')
+parser.add_argument('-tk', '--token', default="strobe", type=str, dest='token', help='file name token to add to input file name')
 parser.add_argument('inputMovie', help='input movie')
 args = parser.parse_args()
 
@@ -106,15 +106,23 @@ if mode == 1:
 		frameCurrent = frameCurrent + 1
 		sys.stdout.write("\rframe %4d of %s" % (frameCurrent-frameStart, frameRange))
 		sys.stdout.flush()
-		if frameCurrent == frameStart + 500:
+		if frameCurrent == frameStart + 5:
 			break
-	background = background /frameRange
+	background = background / 6
 
 
-erosion_size = 3
-el = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-				(2 * erosion_size + 1, 2 * erosion_size + 1),
-				(erosion_size, erosion_size))
+if mode == 1 or mode == 2:
+	erosion_size = 3
+	el = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+					(2 * erosion_size + 1, 2 * erosion_size + 1),
+					(erosion_size, erosion_size))
+
+if mode == 2:
+	#fgbg = cv2.bgsegm.createBackgroundSubtractorMOG() 
+	#fgbg = cv2.createBackgroundSubtractorMOG2() 
+	#fgbg = cv2.bgsegm.createBackgroundSubtractorGMG()
+	fgbg = cv2.bgsegm.createBackgroundSubtractorGSOC()
+
 
 cap.set(cv2.CAP_PROP_POS_FRAMES,frameStart)
 frameCurrent = frameStart
@@ -125,7 +133,7 @@ while frameCurrent < frameEnd:
 
 	if mode == 0:
 		canvas  = np.maximum(canvas,frameData)
-	else:
+	elif mode == 1:
 		a = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY)
 		b = cv2.cvtColor(frameData, cv2.COLOR_BGR2GRAY)
 		diff = b-a
@@ -135,13 +143,27 @@ while frameCurrent < frameEnd:
 		diff = cv2.dilate(diff,el)
 		diff = diff * 20
 		diff = pow(diff,2)
-		diff = cv2.GaussianBlur(diff,(5,5),.6)
+		diff = cv2.GaussianBlur(diff,(13,13),.6)
 		diff = np.clip((diff-.2)*1.25, 0,1)
 		diff = cv2.cvtColor(diff, cv2.COLOR_GRAY2BGR)
 		canvas = canvas*(1-diff)+ frameData * diff
-	
-	look = canvas
+	elif mode == 2:
+		mask = fgbg.apply(frame)
+		diff = mask.astype(np.float32)/255
+		diff = cv2.erode(diff,el)
+		diff = cv2.GaussianBlur(diff,(5,5),.6)
+		#diff = cv2.dilate(diff,el)
+		mask = (diff*255).astype(np.uint8)
+		mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+		maskData = mask.astype(np.float32)/255
+		frameData = frame.astype(np.float32)/255
+		canvas = canvas * (1-maskData) + frameData * maskData
+
+	look = canvas 
 	look = (np.clip(look,0,1)*255).astype(np.uint8)
+	
+
+
 	cv2.imshow("stab",  cv2.resize(look,(720,1280)))
 
 
