@@ -97,18 +97,6 @@ if frameEnd == -1:
 
 
 
-if lut:
-	lut = cube.CubeLUT("../luts/AC_A7S_709_.cube")
-
-
-# take first frame of the video
-n=1.0
-ret,frame = cap.read()
-buff=np.float32(frame)/255.
-
-
-startTime = time.perf_counter()
-
 def softContrastCalc(x,k):
 	x1 = .5*pow(2*x,k)
 	x2 = .5*pow(2*(1-x),k)
@@ -124,7 +112,35 @@ def makeContrastLUT():
 	clut = np.dstack((identity, identity, identity))
 	return clut
 
+def makeXformLUT():
+	# initialize cube LUT file
+	lutXform = cube.CubeLUT(lut)
+
+	# create LUT image
+	identity = np.arange(256, dtype = np.dtype('uint8'))
+	identity = np.dstack((identity, identity, identity))
+
+	# convert to float and apply transform
+	fidentity = identity.astype(np.float32)/255
+	lutXform.transform_trilinear(fidentity, in_place=True)
+	fidentity = np.clip(fidentity, 0, 1)
+
+	# back to 8 bit and output
+	clut = (fidentity*255).astype(np.uint8)	
+	clut = np.clip(clut,0,255)
+	return clut
+
+
+# take first frame of the video
+n=1.0
+ret,frame = cap.read()
+buff=np.float32(frame)/255.
+
+
+startTime = time.perf_counter()
+
 clut = makeContrastLUT()
+xformLut = makeXformLUT()
 
 
 startTime = time.perf_counter()
@@ -151,7 +167,8 @@ while frameCurrent < frameEnd:
 	if softContrast != 1:
 		frameData = cv2.LUT((frameData*255).astype(np.uint8), clut).astype(np.float32)/255.0 	
 	if lut:
-		lut.transform_trilinear(frameData, in_place=True)
+		frameData = cv2.LUT((frameData*255).astype(np.uint8), xformLut).astype(np.float32)/255
+		frameData = np.clip(frameData,0,1)
 	buff = buff + frameData
 	frameCurrent = frameCurrent + 1
 
@@ -164,7 +181,7 @@ while frameCurrent < frameEnd:
 
 
 if not add:
-	buff = buff/frameRange
+	buff = buff/(frameRange)
 	#buff = cv2.LUT((buff*255).astype(np.uint8), clut).astype(np.float32)/255.0
 	if bright != 1:
 		buff *= bright
