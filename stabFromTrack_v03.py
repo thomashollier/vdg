@@ -3,6 +3,7 @@
 import sys, argparse, re, time
 import cv2
 import numpy as np
+import math
 
 
 parser = argparse.ArgumentParser(description="Stabilize a movie file based on values in a data file in the following format:\n\tFRAME X Y.  \nFRAME is the frame number integer, X and Y are normalized floats. Blender\'s Y coordinate is flipped so if image has the same orientation in blender as it does in openCV view, yFlip argument is needed")
@@ -15,6 +16,8 @@ parser.add_argument('-xr', '--xReverse', action='store_true',dest='xReverse', he
 parser.add_argument('-yf', '--yFlip', action='store_true', dest='yFlip', help='invert the y value in case image was tracked with vertical flip')   
 parser.add_argument('-yr', '--yReverse', action='store_true', dest='yReverse', help='frame, X and Y values')   
 parser.add_argument('-db', '--debug', action='store_true', dest='debug', help='frame, X and Y values')   
+parser.add_argument('-xo', '--xOffset',default=0, type=float, dest='xOffset', help='offset in x position')   
+parser.add_argument('-yo', '--yOffset',default=0, type=float, dest='yOffset', help='offset in y position')
 parser.add_argument('-rf', '--refFrame',default=-1, type=int, dest='refFrame', help='frame to use as reference (default is "frameStart"')   
 parser.add_argument('-tk', '--token',default="stab", type=str, dest='token', help='token filename extension')   
 parser.add_argument('-wo', '--writeOutput', action='store_true', dest='writeOutput', help='first frame of the stabilize')
@@ -33,6 +36,8 @@ xReverse = args.xReverse
 yFlip = args.yFlip
 yReverse = args.yReverse
 debug = args.debug
+xOffset = args.xOffset
+yOffset = args.yOffset
 refFrame = args.refFrame
 token = args.token
 inputMovie = args.inputMovie 
@@ -50,6 +55,8 @@ print("xFlip: %s" % xFlip)
 print("xReverse: %s" % xReverse)
 print("yFlip: %s" % yFlip)
 print("yReverse: %s" % yReverse)
+print("xOffset: %s" % xOffset)
+print("yOffset: %s" % yOffset)
 print("refFrame: %s" % refFrame)
 print("outputMovie: %s" % outputMovieFile)
 
@@ -113,25 +120,61 @@ def readTrackerData(myFile):
 
 	return frameFirst, frameLast, trackerDict
 
+
+
 def getMatrix(trackerDict, frame, frameRef, w, h):
-	M = np.float32([[1,0,0],[0,1,0]])
-	if len(trackersDict) == 1:
-		v = trackerDict[0]['data'][str(frame)]
-		r = trackerDict[0]['data'][str(frameRef)]
-		vx, vy = tuple(v)
-		rx, ry = tuple(r)
+	tx = 0
+	ty = 0
+	rot = 0
+	scale = 1
 
-		if xReverse:
-			X = (vx-rx)*w
-		else:
-			X = (rx-vx)*w
-		if yReverse:
-			Y = (vy-ry)*h
-		else:
-			Y = (ry-vy)*h
 
-		M = np.float32([[1,0,X],[0,1,Y]])
-	return M
+	pnt0 = trackerDict[0]['data'][str(frame)]
+	ref0 = trackerDict[0]['data'][str(frameRef)]
+	pnt0x, pnt0y = tuple(pnt0)
+	ref0x, ref0y = tuple(ref0)
+
+	if xReverse:
+		tx = ((pnt0x-ref0x)+xOffset) *w
+	else:
+		tx = ((ref0x-pnt0x)+xOffset) *w
+	if yReverse:
+		ty = ((pnt0y-ref0y)+yOffset) *h
+	else:
+		ty = ((ref0y-pnt0y)+yOffset) *h
+
+
+	if len(trackersDict) == 2:
+		pnt1 = trackerDict[1]['data'][str(frame)]
+		ref1 = trackerDict[1]['data'][str(frameRef)]
+		pnt1x, pnt1y = tuple(pnt1)
+		ref1x, ref1y = tuple(ref1)
+
+		refVectorx = ref1x - ref0x
+		refVectory = ref1y - ref0y
+		refAngle = math.atan2(refVectory, refVectorx)
+		pntVectorx = pnt1x - pnt0x
+		pntVectory = pnt1y - pnt0y
+		pntAngle = math.atan2(pntVectory, pntVectorx)
+
+		rot = refAngle - pntAngle
+		scale = math.dist([ref0x,ref0y],[ref1x,ref1y]) / math.dist([pnt0x,pnt0y],[pnt1x,pnt1y]) 
+		#scale = math.dist([pnt0x,pnt0y],[pnt1x,pnt1y]) /  math.dist([ref0x,ref0y],[ref1x,ref1y]) 
+
+	rotateOffsetMatrix = np.float32([
+		[1,	0,	-pnt0x*w],
+		[0,	1,	-pnt0y*h],
+		[0,0,1]
+		])
+
+	M = np.float32([
+		[scale*math.cos(rot),	-math.sin(rot),		(ref0x+xOffset)*w],
+		[math.sin(rot),		scale*math.cos(rot),	(ref0y+yOffset)*h],
+		[0,0,1]
+		])
+
+	M = np.matmul(M,rotateOffsetMatrix)
+	return M[:2]
 
 def getXY(trackerDict, frame, w, h):
 	v = trackerDict[0]['data'][str(frame)]
