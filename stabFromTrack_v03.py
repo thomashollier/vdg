@@ -18,6 +18,7 @@ parser.add_argument('-yr', '--yReverse', action='store_true', dest='yReverse', h
 parser.add_argument('-db', '--debug', action='store_true', dest='debug', help='frame, X and Y values')   
 parser.add_argument('-xo', '--xOffset',default=0, type=float, dest='xOffset', help='offset in x position')   
 parser.add_argument('-yo', '--yOffset',default=0, type=float, dest='yOffset', help='offset in y position')
+parser.add_argument('-sm', '--scaleMult',default=1, type=float, dest='scaleMult', help='multiplication on scale')
 parser.add_argument('-rf', '--refFrame',default=-1, type=int, dest='refFrame', help='frame to use as reference (default is "frameStart"')   
 parser.add_argument('-tk', '--token',default="stab", type=str, dest='token', help='token filename extension')   
 parser.add_argument('-wo', '--writeOutput', action='store_true', dest='writeOutput', help='first frame of the stabilize')
@@ -38,6 +39,7 @@ yReverse = args.yReverse
 debug = args.debug
 xOffset = args.xOffset
 yOffset = args.yOffset
+scaleMult = args.scaleMult
 refFrame = args.refFrame
 token = args.token
 inputMovie = args.inputMovie 
@@ -57,6 +59,7 @@ print("yFlip: %s" % yFlip)
 print("yReverse: %s" % yReverse)
 print("xOffset: %s" % xOffset)
 print("yOffset: %s" % yOffset)
+print("scaleMult: %s" % scaleMult)
 print("refFrame: %s" % refFrame)
 print("outputMovie: %s" % outputMovieFile)
 
@@ -117,7 +120,6 @@ def readTrackerData(myFile):
 			trackerDict[str(n)] = trackerDict[str(latest)]
 		n = n + 1
 
-
 	return frameFirst, frameLast, trackerDict
 
 
@@ -127,7 +129,6 @@ def getMatrix(trackerDict, frame, frameRef, w, h):
 	ty = 0
 	rot = 0
 	scale = 1
-
 
 	pnt0 = trackerDict[0]['data'][str(frame)]
 	ref0 = trackerDict[0]['data'][str(frameRef)]
@@ -150,23 +151,23 @@ def getMatrix(trackerDict, frame, frameRef, w, h):
 		pnt1x, pnt1y = tuple(pnt1)
 		ref1x, ref1y = tuple(ref1)
 
-		refVectorx = ref1x - ref0x
-		refVectory = ref1y - ref0y
+		refVectorx = (ref0x - ref1x)
+		refVectory = (ref0y - ref1y)
+		pntVectorx = (pnt0x - pnt1x)
+		pntVectory = (pnt0y - pnt1y)
+
 		refAngle = math.atan2(refVectory, refVectorx)
-		pntVectorx = pnt1x - pnt0x
-		pntVectory = pnt1y - pnt0y
 		pntAngle = math.atan2(pntVectory, pntVectorx)
 
-		rot = refAngle - pntAngle
-		scale = math.dist([ref0x,ref0y],[ref1x,ref1y]) / math.dist([pnt0x,pnt0y],[pnt1x,pnt1y]) 
-		#scale = math.dist([pnt0x,pnt0y],[pnt1x,pnt1y]) /  math.dist([ref0x,ref0y],[ref1x,ref1y]) 
+		rot = (refAngle - pntAngle) *.5
+		scale = math.dist([ref0x,ref0y],[ref1x,ref1y]) / math.dist([pnt0x,pnt0y],[pnt1x,pnt1y])
+		scale = scale * scaleMult
 
 	rotateOffsetMatrix = np.float32([
 		[1,	0,	-pnt0x*w],
 		[0,	1,	-pnt0y*h],
 		[0,0,1]
 		])
-
 	M = np.float32([
 		[scale*math.cos(rot),	-math.sin(rot),		(ref0x+xOffset)*w],
 		[math.sin(rot),		scale*math.cos(rot),	(ref0y+yOffset)*h],
@@ -177,7 +178,7 @@ def getMatrix(trackerDict, frame, frameRef, w, h):
 	return M[:2]
 
 def getXY(trackerDict, frame, w, h):
-	v = trackerDict[0]['data'][str(frame)]
+	v = trackerDict['data'][str(frame)]
 	X = int(v[0]*w)
 	Y = int(v[1]*h)
 	return [X,Y]
@@ -247,19 +248,24 @@ while frameCurrent < frameEnd:
 		print("Problem reading frame %s"%i)
 		exit
 
-	mtx = getMatrix(trackersDict, frameCurrent+1, refFrame, movieWidth, movieHeight)
-	x,y = getXY(trackersDict, frameCurrent+1, movieWidth, movieHeight)
+	mtx = getMatrix(trackersDict, frameCurrent + 1, refFrame, movieWidth, movieHeight)
 	if not debug:
-		#cv2.circle(srcFrame,(x,y),30,(100,0,255),-1)
-		
+#		for k in trackersDict.keys():
+#			x,y = getXY(trackersDict[k], frameCurrent + 1, movieWidth, movieHeight)
+#			cv2.circle(srcFrame,(x,y),20,(100,0,255),-1)
 		dstStab = cv2.warpAffine(srcFrame, mtx, (movieWidth,movieHeight))
+#		for k in trackersDict.keys():
+#			x,y = getXY(trackersDict[k], refFrame, movieWidth, movieHeight)
+#			cv2.circle(dstStab,(x,y),15,(100,255,0),-1)
 		dstStabShow = cv2.resize(dstStab,(int(movieWidth*.25),int(movieHeight*.25)))
 		for x in range(50,dstStabShow.shape[0],50):
 			for y in range(50,dstStabShow.shape[1],50):
 				cv2.circle(dstStabShow,(y,x),3,(255,0,0),-1)
 		cv2.imshow("stab",  dstStabShow)
 	else:
-		cv2.circle(srcFrame,(x,y),30,(100,0,255),-1)
+		for k in trackersDict.keys():
+			x,y = getXY(trackersDict[k], frameCurrent + 1, movieWidth, movieHeight)
+			cv2.circle(srcFrame,(x,y),15,(100,0,255),-1)
 		cv2.imshow("stab",  cv2.resize(srcFrame,(int(movieWidth*.25),int(movieHeight*.25))))
 		dstStab = srcFrame
 
@@ -273,8 +279,6 @@ while frameCurrent < frameEnd:
 	remainingTime = "%02d:%02d" % (int(remainingTime/60), int(remainingTime%60))
 	sys.stdout.write("\rFrame %4d of %s -- %.02f%% complete -- %s seconds remaining" % (frameCurrent-frameStart, frameRange, percentDone, remainingTime))
 	sys.stdout.flush()
-
-
 
 	# Exit if ESC pressed
 	k = cv2.waitKey(1) & 0xff
