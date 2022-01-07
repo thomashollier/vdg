@@ -18,6 +18,7 @@ parser.add_argument('-fo', '--frameOffset', default=0, type=int, dest='frameOffs
 parser.add_argument('-fr', '--frameRange', default=1000, type=int, dest='frameRange', help='number of frame to average')
 parser.add_argument('-ad', '--add', default=False, type=bool, dest='add', help='do not devide result by number of frames')
 parser.add_argument('-b', '--brightness', default=1, type=float, dest='bright', help='multiply')
+parser.add_argument('-cm', '--compMode', default=0, type=int, dest='compMode', help='comp mode 0=on black, 1=on white, 2=unpremuly')
 
 parser.add_argument('-softContrast', '--softContrast', default=1, type=float, dest='softContrast', help='softContrast')
 parser.add_argument('-g', '--gamma', default=1, type=float, dest='gamma', help='gamma')
@@ -44,6 +45,7 @@ frameStart = args.frameStart
 frameEnd = args.frameEnd
 add = args.add
 bright = args.bright
+compMode = args.compMode
 softContrast = args.softContrast
 gamma = args.gamma
 gammaBefore = args.gammaBefore
@@ -72,6 +74,7 @@ print("frameRange: %s" % frameRange)
 print("frameStart: %s" % frameStart)
 print("frameEnd: %s" % frameEnd)
 print("add: %s" % add)
+print("compMode: %s" % compMode)
 print("bright: %s" % bright)
 print("gamma: %s" % gamma)
 print("gammaBefore: %s" % gammaBefore)
@@ -86,11 +89,34 @@ print("output: %s\n" % output)
 ####
 #### define color correction luts
 ####
+
+class ccLUT:
+	def init(self):
+		self.lut = np.arange(256, dtype = np.dtype('uint8'))
+	def mkInt(self):
+		self.lut = self.lut.astype(np.uint8)*255
+	def mkFloat(self):
+		self.lut = self.lut.astype(np.float32)/255
+	def parseCC(self, ccString):
+		foo = ccString.split(',')
+		fooDict = {}
+		for f in foo:
+			name = foo.split("=")
+			print(name[0])
+			print(name[:1])
+
+#l=ccLUT()
+#l.parseCC('filt1, filt2=bias=.5:pow=2')
+
+
 def softContrastCalc(x,k):
 	x1 = .5*pow(2*x,k)
 	x2 = .5*pow(2*(1-x),k)
 	x3 = x1 if x < .5 else x2 
 	return x3 if x < .5 else (1-x3)
+
+def gammaCalc(x, k):
+	return pow(x,k)
 
 def makeContrastLUT():
 	identity = np.arange(256, dtype = np.dtype('uint8'))
@@ -143,7 +169,7 @@ frameCurrent = frameStart
 cap.set(cv2.CAP_PROP_POS_FRAMES,frameCurrent)
 ret,frame = cap.read()
 buffer=np.float32(frame)/255.
-
+bufferWhite=np.zeros_like(buffer)
 
 startTime = time.perf_counter()
 
@@ -171,7 +197,12 @@ while frameCurrent < frameEnd:
 		frameData = cv2.LUT((frameData*255).astype(np.uint8), xformLut).astype(np.float32)/255
 		frameData = np.clip(frameData,0,1)
 	buffer = buffer + frameData
+	if compMode > 0:
+		bufferWhite = bufferWhite + np.clip(frameData*255,0,1)
+	
 	frameCurrent = frameCurrent + 1
+
+
 
 	percentDone = 100.0*float(frameCurrent-frameStart)/float(frameRange)
 	elapsedTime = time.perf_counter()-startTime
@@ -181,8 +212,22 @@ while frameCurrent < frameEnd:
 	sys.stdout.flush()
 
 
+	# Exit if ESC pressed
+	k = cv2.waitKey(1) & 0xff
+	if k == 27 : break
+
+
+
 if not add:
 	buffer = buffer/(frameRange)
+	
+	if compMode > 0:
+		bufferWhite = np.clip(bufferWhite/(frameRange+1),0,1)
+		if compMode == 2:
+			buffer = buffer/bufferWhite
+		elif compMode == 1:	
+			buffer = 1-bufferWhite + buffer
+
 	#buffer = cv2.LUT((buffer*255).astype(np.uint8), clut).astype(np.float32)/255.0
 	if bright != 1:
 		buffer *= bright
@@ -210,6 +255,6 @@ cv2.imwrite(output,buffer)
 
 cap.release()
 
-print("\n\nProcess complete:\n%s\n" % output)
+print("\n\ncomplete:\nopen %s\n" % output)
 
 
