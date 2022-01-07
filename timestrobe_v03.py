@@ -13,7 +13,8 @@ parser.add_argument('-lut', '--lut', default=None, type=str, dest='lut', help='p
 
 parser.add_argument('-fs', '--frameStart', default=1, type=int, dest='frameStart', help='first frame of the stabilize')
 parser.add_argument('-fe', '--frameEnd', default=1, type=int, dest='frameEnd', help='first frame of the stabilize')
-parser.add_argument('-m' , '--mode', default=0, type=int, dest='mode', help='0 = max (default), 1 = over')
+parser.add_argument('-m' , '--mode', default=0, type=int, dest='mode', help='0 = max (default), 1 = over, 2 = bg etract, 3 = min')
+parser.add_argument('-p', '--prefix', default="basename", type=str, dest='prefix', help='prefix for output file name')
 
 
 parser.add_argument('-ad', '--add', default=False, type=bool, dest='add', help='do not devide result by number of frames')
@@ -29,6 +30,7 @@ args = parser.parse_args()
 
 
 
+prefix = args.prefix
 lut = args.lut
 frameStart = args.frameStart
 frameEnd = args.frameEnd
@@ -45,7 +47,8 @@ token= args.token
 inputMovie = args.inputMovie
 
 patt = re.compile('(.mov)|(.MP4)|(.MOV)|(.mp4)')
-output = re.sub(patt, '_%s.png' % token, inputMovie)
+output = "%s_%s" % (prefix, re.sub(patt, '_%s.png' % token, inputMovie))
+
 
 
 
@@ -106,9 +109,9 @@ if mode == 1:
 		frameCurrent = frameCurrent + 1
 		sys.stdout.write("\rframe %4d of %s" % (frameCurrent-frameStart, frameRange))
 		sys.stdout.flush()
-		if frameCurrent == frameStart + 5:
-			break
-	background = background / 6
+		#if frameCurrent == frameStart + 5:
+		#	break
+	background = background / frameRange
 
 
 if mode == 1 or mode == 2:
@@ -133,6 +136,8 @@ while frameCurrent < frameEnd:
 
 	if mode == 0:
 		canvas  = np.maximum(canvas,frameData)
+	elif mode == 3:
+		canvas  = np.minimum(canvas,frameData)
 	elif mode == 1:
 		a = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY)
 		b = cv2.cvtColor(frameData, cv2.COLOR_BGR2GRAY)
