@@ -18,6 +18,7 @@ parser.add_argument('-yr', '--yReverse', action='store_true', dest='yReverse', h
 parser.add_argument('-db', '--debug', action='store_true', dest='debug', help='frame, X and Y values')   
 parser.add_argument('-xo', '--xOffset',default=0, type=float, dest='xOffset', help='offset in x position')   
 parser.add_argument('-yo', '--yOffset',default=0, type=float, dest='yOffset', help='offset in y position')
+parser.add_argument('-ro', '--rOffset',default=0, type=float, dest='rOffset', help='offset in rotation value')
 parser.add_argument('-sm', '--scaleMult',default=1, type=float, dest='scaleMult', help='multiplication on scale')
 parser.add_argument('-rf', '--refFrame',default=-1, type=int, dest='refFrame', help='frame to use as reference (default is "frameStart"')   
 parser.add_argument('-tk', '--token',default="stab", type=str, dest='token', help='token filename extension')   
@@ -39,6 +40,7 @@ yReverse = args.yReverse
 debug = args.debug
 xOffset = args.xOffset
 yOffset = args.yOffset
+rOffset = args.rOffset
 scaleMult = args.scaleMult
 refFrame = args.refFrame
 token = args.token
@@ -59,6 +61,7 @@ print("yFlip: %s" % yFlip)
 print("yReverse: %s" % yReverse)
 print("xOffset: %s" % xOffset)
 print("yOffset: %s" % yOffset)
+print("rOffset: %s" % rOffset)
 print("scaleMult: %s" % scaleMult)
 print("refFrame: %s" % refFrame)
 print("outputMovie: %s" % outputMovieFile)
@@ -83,6 +86,25 @@ def read_frame(movie):
 	ret, frame = movie.read()
 	return(ret, frame)
 		
+def createTestPoints():
+	pt0 = {}
+	pt1 = {}
+	w = 1
+	h = 1
+	ref0 = [.5*w,.5*h]
+	ref1 = [.8*w,.6*h]
+
+
+	for n in range(601):
+		if n < 2:
+			pt0[str(n)] = ref0
+			pt1[str(n)] = ref1
+		else:
+			pt0[str(n)] = [0, 0]
+			pt1[str(n)] = [.5*w, (math.sin(n*.05)*.5+.5)*h]
+
+	return {0:{'ff': 1, 'lf': 600, 'data': pt0}, 1: {'ff':1, 'lf': 600, 'data':pt1}}
+
 def readTrackerData(myFile):
 	# read values from file
 	with open(myFile) as file:
@@ -125,25 +147,13 @@ def readTrackerData(myFile):
 
 
 def getMatrix(trackerDict, frame, frameRef, w, h):
-	tx = 0
-	ty = 0
 	rot = 0
 	scale = 1
-
+	
 	pnt0 = trackerDict[0]['data'][str(frame)]
 	ref0 = trackerDict[0]['data'][str(frameRef)]
 	pnt0x, pnt0y = tuple(pnt0)
 	ref0x, ref0y = tuple(ref0)
-
-	if xReverse:
-		tx = ((pnt0x-ref0x)+xOffset) *w
-	else:
-		tx = ((ref0x-pnt0x)+xOffset) *w
-	if yReverse:
-		ty = ((pnt0y-ref0y)+yOffset) *h
-	else:
-		ty = ((ref0y-pnt0y)+yOffset) *h
-
 
 	if len(trackersDict) == 2:
 		pnt1 = trackerDict[1]['data'][str(frame)]
@@ -151,30 +161,39 @@ def getMatrix(trackerDict, frame, frameRef, w, h):
 		pnt1x, pnt1y = tuple(pnt1)
 		ref1x, ref1y = tuple(ref1)
 
-		refVectorx = (ref0x - ref1x)
-		refVectory = (ref0y - ref1y)
-		pntVectorx = (pnt0x - pnt1x)
-		pntVectory = (pnt0y - pnt1y)
+		refVectorx = (ref1x - ref0x)
+		refVectory = (ref1y - ref0y)
+		pntVectorx = (pnt1x - pnt0x)
+		pntVectory = (pnt1y - pnt0y)
 
-		refAngle = math.atan2(refVectory, refVectorx)
-		pntAngle = math.atan2(pntVectory, pntVectorx)
+		refAngle = (math.atan2(refVectory*h/w, refVectorx)+2*math.pi)
+		pntAngle = (math.atan2(pntVectory*h/w, pntVectorx)+2*math.pi)
 
-		rot = (refAngle - pntAngle) *.5
-		scale = math.dist([ref0x,ref0y],[ref1x,ref1y]) / math.dist([pnt0x,pnt0y],[pnt1x,pnt1y])
+		rot = (refAngle - pntAngle ) + rOffset
+		scale = (math.dist([ref0x,ref0y*h/w],[ref1x,ref1y*h/w]) / math.dist([pnt0x,pnt0y*h/w],[pnt1x,pnt1y*h/w]))
 		scale = scale * scaleMult
 
-	rotateOffsetMatrix = np.float32([
-		[1,	0,	-pnt0x*w],
-		[0,	1,	-pnt0y*h],
-		[0,0,1]
-		])
-	M = np.float32([
-		[scale*math.cos(rot),	-math.sin(rot),		(ref0x+xOffset)*w],
-		[math.sin(rot),		scale*math.cos(rot),	(ref0y+yOffset)*h],
-		[0,0,1]
-		])
+	Moffset = np.float32([
+                [1,     0,      -pnt0x*w],
+                [0,     1,      -pnt0y*h],
+                [0,	0, 	1]
+                ])
+	Mplace = np.float32([
+                [1,     0,      (ref0x+xOffset)*w],
+                [0,     1,      (ref0y+yOffset)*h],
+                [0,	0, 	1]
+                ])
+	Mr  = np.float32([      
+                [scale*math.cos(rot),	-scale*math.sin(rot),	0],
+                [scale*math.sin(rot),	scale*math.cos(rot),	0],
+                [0,     		0,      		1]
+                ])
+	Mr = cv2.getRotationMatrix2D([0,0], -math.degrees(rot), scale )
+	Mr = np.append(Mr, [[0,0, 1]], axis = 0)
 
-	M = np.matmul(M,rotateOffsetMatrix)
+
+	M = np.matmul(Mr, Moffset)
+	M = np.matmul(Mplace, M)
 	return M[:2]
 
 def getXY(trackerDict, frame, w, h):
@@ -224,6 +243,7 @@ for i, v in enumerate(trackers):
 	ff, lf, data = readTrackerData(v)
 	trackersDict[i] = {'ff':ff, 'lf':lf, 'data':data}
 
+#trackersDict = createTestPoints()
 
 if frameStart == -1:
 	frameStart = trackersDict[0]['ff']
@@ -250,14 +270,20 @@ while frameCurrent < frameEnd:
 
 	mtx = getMatrix(trackersDict, frameCurrent + 1, refFrame, movieWidth, movieHeight)
 	if not debug:
-#		for k in trackersDict.keys():
-#			x,y = getXY(trackersDict[k], frameCurrent + 1, movieWidth, movieHeight)
-#			cv2.circle(srcFrame,(x,y),20,(100,0,255),-1)
+		# draw red dots for tracked points
+		if False:
+			for k in trackersDict.keys():
+				x,y = getXY(trackersDict[k], frameCurrent + 1, movieWidth, movieHeight)
+				cv2.circle(srcFrame,(x,y),20,(100,0,255),-1)
+		# warp
 		dstStab = cv2.warpAffine(srcFrame, mtx, (movieWidth,movieHeight))
-#		for k in trackersDict.keys():
-#			x,y = getXY(trackersDict[k], refFrame, movieWidth, movieHeight)
-#			cv2.circle(dstStab,(x,y),15,(100,255,0),-1)
+		# draw reference on warped image
+		if False:
+			for k in trackersDict.keys():
+				x,y = getXY(trackersDict[k], refFrame, movieWidth, movieHeight)
+				cv2.circle(dstStab,(x,y),15,(100,255,0),-1)
 		dstStabShow = cv2.resize(dstStab,(int(movieWidth*.25),int(movieHeight*.25)))
+		# blue dot grid
 		for x in range(50,dstStabShow.shape[0],50):
 			for y in range(50,dstStabShow.shape[1],50):
 				cv2.circle(dstStabShow,(y,x),3,(255,0,0),-1)
