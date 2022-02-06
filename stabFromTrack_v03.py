@@ -18,10 +18,13 @@ parser.add_argument('-yr', '--yReverse', action='store_true', dest='yReverse', h
 parser.add_argument('-db', '--debug', action='store_true', dest='debug', help='frame, X and Y values')   
 parser.add_argument('-xo', '--xOffset',default=0, type=float, dest='xOffset', help='offset in x position')   
 parser.add_argument('-yo', '--yOffset',default=0, type=float, dest='yOffset', help='offset in y position')
+parser.add_argument('-xp', '--xPad',default=0, type=float, dest='xPad', help='pad in width, default = 0, 1 = half of width on both side')   
+parser.add_argument('-yp', '--yPad',default=0, type=float, dest='yPad', help='pad in height, default = 0, 1 = half of heigth on both side')
 parser.add_argument('-ro', '--rOffset',default=0, type=float, dest='rOffset', help='offset in rotation value')
 parser.add_argument('-sm', '--scaleMult',default=1, type=float, dest='scaleMult', help='multiplication on scale')
 parser.add_argument('-rf', '--refFrame',default=-1, type=int, dest='refFrame', help='frame to use as reference (default is "frameStart"')   
 parser.add_argument('-tk', '--token',default="stab", type=str, dest='token', help='token filename extension')   
+parser.add_argument('-wm', '--writeMask', action='store_true', dest='writeMask', help='first frame of the stabilize')
 parser.add_argument('-wo', '--writeOutput', action='store_true', dest='writeOutput', help='first frame of the stabilize')
 parser.add_argument('inputMovie', help='input movie')
 
@@ -32,6 +35,7 @@ args = parser.parse_args()
 frameStart = args.frameStart
 frameEnd = args.frameEnd
 writeOutput = args.writeOutput
+writeMask = args.writeMask
 trackData = args.trackData
 xFlip = args.xFlip
 xReverse = args.xReverse
@@ -40,6 +44,8 @@ yReverse = args.yReverse
 debug = args.debug
 xOffset = args.xOffset
 yOffset = args.yOffset
+xPad = args.xPad
+yPad = args.yPad
 rOffset = args.rOffset
 scaleMult = args.scaleMult
 refFrame = args.refFrame
@@ -48,7 +54,6 @@ inputMovie = args.inputMovie
 
 patt = re.compile('(.mov)|(.MP4)|(.MOV)|(.mp4)')
 outputMovieFile = re.sub(patt, '_%s.mp4' % token, inputMovie)
-
 
 print("\n")
 print("inputMovie: %s" % inputMovie)
@@ -64,6 +69,7 @@ print("yOffset: %s" % yOffset)
 print("rOffset: %s" % rOffset)
 print("scaleMult: %s" % scaleMult)
 print("refFrame: %s" % refFrame)
+print("writeMask: %s" % writeMask)
 print("outputMovie: %s" % outputMovieFile)
 
 trackers = [t for t in trackData.split(':')]
@@ -215,6 +221,14 @@ movieHeight = int(movie.get(cv2.CAP_PROP_FRAME_HEIGHT))
 movieWidth = int(movie.get(cv2.CAP_PROP_FRAME_WIDTH))
 print("\ninput movie height by width is: \t%s X %s"% (movieHeight, movieWidth))
 
+outputMovieWidth = int(movieWidth*(1+xPad))
+outputMovieHeight = int(movieHeight*(1+yPad))
+print("\noutput movie height by width is: \t%s X %s"% (outputMovieHeight, outputMovieWidth))
+
+xOffset += xPad*.5
+yOffset += yPad*.5
+
+
 #--- Load first frmae and print shape
 ret, srcFrame = read_frame(movie)
 if ret != True:
@@ -233,8 +247,15 @@ else:
 outputMovie = cv2.VideoWriter(
 	outputMovieFile,
 	cv2.VideoWriter_fourcc('m','p','4','v'), 120, 
-	(movieWidth,movieHeight)
+	(outputMovieWidth, outputMovieHeight)
 ) if writeOutput else None
+
+outputMaskMovie = cv2.VideoWriter(
+	outputMovieFile.replace(".mp4","_mask.mp4"),
+	cv2.VideoWriter_fourcc('m','p','4','v'), 120, 
+	(outputMovieWidth, outputMovieHeight)
+) if writeMask else None
+
 
 
 #read from tracking data file
@@ -243,7 +264,6 @@ for i, v in enumerate(trackers):
 	ff, lf, data = readTrackerData(v)
 	trackersDict[i] = {'ff':ff, 'lf':lf, 'data':data}
 
-#trackersDict = createTestPoints()
 
 if frameStart == -1:
 	frameStart = trackersDict[0]['ff']
@@ -264,6 +284,10 @@ frameCurrent = frameStart
 while frameCurrent < frameEnd:
 
 	ret, srcFrame = read_frame(movie)
+	if writeMask:
+		srcFrame = cv2.cvtColor(srcFrame, cv2.COLOR_RGB2RGBA)
+		srcFrame[:,:,3] = 255
+
 	if ret != True:
 		print("Problem reading frame %s"%i)
 		exit
@@ -276,7 +300,7 @@ while frameCurrent < frameEnd:
 				x,y = getXY(trackersDict[k], frameCurrent + 1, movieWidth, movieHeight)
 				cv2.circle(srcFrame,(x,y),20,(100,0,255),-1)
 		# warp
-		dstStab = cv2.warpAffine(srcFrame, mtx, (movieWidth,movieHeight))
+		dstStab = cv2.warpAffine(srcFrame, mtx, (outputMovieWidth,outputMovieHeight))
 		# draw reference on warped image
 		if False:
 			for k in trackersDict.keys():
@@ -295,8 +319,16 @@ while frameCurrent < frameEnd:
 		cv2.imshow("stab",  cv2.resize(srcFrame,(int(movieWidth*.25),int(movieHeight*.25))))
 		dstStab = srcFrame
 
-	outputMovie.write(dstStab) if writeOutput else None
 
+	if writeOutput:
+		outputFrame = cv2.cvtColor(dstStab, cv2.COLOR_RGBA2RGB)
+		outputMovie.write(outputFrame)
+		if writeMask:
+			outputFrame[:,:,0] = dstStab[:,:,3]
+			outputFrame[:,:,1] = dstStab[:,:,3]
+			outputFrame[:,:,2] = dstStab[:,:,3]
+			outputMaskMovie.write(outputFrame)
+	
 	frameCurrent = frameCurrent + 1
 
 	percentDone = 100.0*float(frameCurrent-frameStart)/float(frameRange)
@@ -312,6 +344,7 @@ while frameCurrent < frameEnd:
 
 movie.release()
 outputMovie.release() 						if writeOutput else None
+outputMaskMovie.release() 					if writeMask else None
 
 print("\ndone")
 print("complete:")
