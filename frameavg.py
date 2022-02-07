@@ -19,6 +19,7 @@ parser.add_argument('-fr', '--frameRange', default=1000, type=int, dest='frameRa
 parser.add_argument('-ad', '--add', default=False, type=bool, dest='add', help='do not devide result by number of frames')
 parser.add_argument('-b', '--brightness', default=1, type=float, dest='bright', help='multiply')
 parser.add_argument('-cm', '--compMode', default=0, type=int, dest='compMode', help='comp mode 0=on black, 1=on white, 2=unpremuly')
+parser.add_argument('-um', '--useMask', action='store_true', dest='useMask', help='Use movie file of mask instead of calculating it procedurally')
 
 parser.add_argument('-softContrast', '--softContrast', default=1, type=float, dest='softContrast', help='softContrast')
 parser.add_argument('-g', '--gamma', default=1, type=float, dest='gamma', help='gamma')
@@ -46,6 +47,7 @@ frameEnd = args.frameEnd
 add = args.add
 bright = args.bright
 compMode = args.compMode
+useMask = args.useMask
 softContrast = args.softContrast
 gamma = args.gamma
 gammaBefore = args.gammaBefore
@@ -75,6 +77,7 @@ print("frameStart: %s" % frameStart)
 print("frameEnd: %s" % frameEnd)
 print("add: %s" % add)
 print("compMode: %s" % compMode)
+print("useMask: %s" % useMask)
 print("bright: %s" % bright)
 print("gamma: %s" % gamma)
 print("gammaBefore: %s" % gammaBefore)
@@ -156,6 +159,9 @@ if lut:
 ######
 
 cap = cv2.VideoCapture(inputMovie)
+if useMask:
+	mtt = cv2.VideoCapture(inputMovie.replace(".mp4","_mask.mp4"))
+
 inputNumberOfFrames = cap.get(cv2.CAP_PROP_FRAME_COUNT) 
 
 if frameStart == -1 and frameEnd == -1:
@@ -169,7 +175,7 @@ frameCurrent = frameStart
 cap.set(cv2.CAP_PROP_POS_FRAMES,frameCurrent)
 ret,frame = cap.read()
 buffer=np.float32(frame)/255.
-bufferWhite=np.zeros_like(buffer)
+bufferWhite=np.ones_like(buffer)
 
 startTime = time.perf_counter()
 
@@ -198,7 +204,13 @@ while frameCurrent < frameEnd:
 		frameData = np.clip(frameData,0,1)
 	buffer = buffer + frameData
 	if compMode > 0:
-		bufferWhite = bufferWhite + np.clip(frameData*255,0,1)
+		if useMask:
+			ret,alpha = mtt.read()
+			alpha = alpha/255
+		else:
+		#	alpha = np.power(np.clip(frameData*255/64,0,1),2)
+			alpha = np.power(np.clip(frameData*255/16,0,1),4)
+		bufferWhite = bufferWhite + alpha
 	
 	frameCurrent = frameCurrent + 1
 
@@ -220,9 +232,9 @@ while frameCurrent < frameEnd:
 
 if not add:
 	buffer = buffer/(frameRange)
-	
+	buffer = np.clip(buffer, .0001, 0.9999)
 	if compMode > 0:
-		bufferWhite = np.clip(bufferWhite/(frameRange+1),0,1)
+		bufferWhite = np.clip(bufferWhite/(frameRange),0.0001,0.9999)
 		if compMode == 2:
 			buffer = buffer/bufferWhite
 		elif compMode == 1:	
@@ -254,6 +266,8 @@ buffer = buffer.astype(np.uint16)
 cv2.imwrite(output,buffer)
 
 cap.release()
+if useMask:
+	mtt.release()
 
 print("\n\ncomplete:\nopen %s\n" % output)
 
