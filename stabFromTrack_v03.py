@@ -11,6 +11,7 @@ parser = argparse.ArgumentParser(description="Stabilize a movie file based on va
 parser.add_argument('-fs', '--frameStart', default=-1, type=int, dest='frameStart', help='first frame of the stabilize')  
 parser.add_argument('-fe', '--frameEnd',default=-1, type=int, dest='frameEnd', help='first frame of the stabilize')   
 parser.add_argument('-td', '--trackData',default=1, type=str, dest='trackData', help='frame, X and Y values')   
+parser.add_argument('-pt', '--posTrack',default=0, type=int, dest='posTrack', help='which track to use for position')   
 parser.add_argument('-xf', '--xFlip', action='store_true', dest='xFlip', help='invert the x value in case image was tracked with horizontal flip')   
 parser.add_argument('-xr', '--xReverse', action='store_true',dest='xReverse', help='')   
 parser.add_argument('-yf', '--yFlip', action='store_true', dest='yFlip', help='invert the y value in case image was tracked with vertical flip')   
@@ -37,6 +38,7 @@ frameEnd = args.frameEnd
 writeOutput = args.writeOutput
 writeMask = args.writeMask
 trackData = args.trackData
+posTrack = args.posTrack
 xFlip = args.xFlip
 xReverse = args.xReverse
 yFlip = args.yFlip
@@ -60,6 +62,7 @@ print("inputMovie: %s" % inputMovie)
 print("frameStart: %s" % frameStart)
 print("frameEnd: %s" % frameEnd)
 print("trackData: %s" % trackData)
+print("posTrack: %s" % posTrack)
 print("xFlip: %s" % xFlip)
 print("xReverse: %s" % xReverse)
 print("yFlip: %s" % yFlip)
@@ -152,31 +155,35 @@ def readTrackerData(myFile):
 
 
 
-def getMatrix(trackerDict, frame, frameRef, w, h):
+def getMatrix(trackerDict, frame, frameRef, w, h, posTrack = 0, rot0Track = 0, rot1Track=1):
 	rot = 0
 	scale = 1
 	
-	pnt0 = trackerDict[0]['data'][str(frame)]
-	ref0 = trackerDict[0]['data'][str(frameRef)]
+	pnt0 = trackerDict[posTrack]['data'][str(frame)]
+	ref0 = trackerDict[posTrack]['data'][str(frameRef)]
 	pnt0x, pnt0y = tuple(pnt0)
 	ref0x, ref0y = tuple(ref0)
 
-	if len(trackersDict) == 2:
-		pnt1 = trackerDict[1]['data'][str(frame)]
-		ref1 = trackerDict[1]['data'][str(frameRef)]
-		pnt1x, pnt1y = tuple(pnt1)
-		ref1x, ref1y = tuple(ref1)
+	if len(trackersDict) >= 2:
+		pntR0 = trackerDict[rot0Track]['data'][str(frame)]
+		refR0 = trackerDict[rot0Track]['data'][str(frameRef)]
+		pntR0x, pntR0y = tuple(pntR0)
+		refR0x, refR0y = tuple(refR0)
+		pntR1 = trackerDict[rot1Track]['data'][str(frame)]
+		refR1 = trackerDict[rot1Track]['data'][str(frameRef)]
+		pntR1x, pntR1y = tuple(pntR1)
+		refR1x, refR1y = tuple(refR1)
 
-		refVectorx = (ref1x - ref0x)
-		refVectory = (ref1y - ref0y)
-		pntVectorx = (pnt1x - pnt0x)
-		pntVectory = (pnt1y - pnt0y)
+		refVectorx = (refR1x - refR0x)
+		refVectory = (refR1y - refR0y)
+		pntVectorx = (pntR1x - pntR0x)
+		pntVectory = (pntR1y - pntR0y)
 
 		refAngle = (math.atan2(refVectory*h/w, refVectorx)+2*math.pi)
 		pntAngle = (math.atan2(pntVectory*h/w, pntVectorx)+2*math.pi)
 
 		rot = (refAngle - pntAngle ) + rOffset
-		scale = (math.dist([ref0x,ref0y*h/w],[ref1x,ref1y*h/w]) / math.dist([pnt0x,pnt0y*h/w],[pnt1x,pnt1y*h/w]))
+		scale = (math.dist([refR0x,refR0y*h/w],[refR1x,refR1y*h/w]) / math.dist([pntR0x,pntR0y*h/w],[pntR1x,pntR1y*h/w]))
 		scale = scale * scaleMult
 
 	Moffset = np.float32([
@@ -292,7 +299,7 @@ while frameCurrent < frameEnd:
 		print("Problem reading frame %s"%i)
 		exit
 
-	mtx = getMatrix(trackersDict, frameCurrent + 1, refFrame, movieWidth, movieHeight)
+	mtx = getMatrix(trackersDict, frameCurrent + 1, refFrame, movieWidth, movieHeight, posTrack)
 	if not debug:
 		# draw red dots for tracked points
 		if False:
