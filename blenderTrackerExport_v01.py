@@ -86,6 +86,7 @@ for clip in bpy.data.movieclips:
     else:
         print("Clip %s: found no  trs trackers." % (clip.name))
 
+
     if DO_TRS:
         for tracker in trsTrackers:
             filepath = "%s/%s_%s.crv"%(bpy.path.abspath('//'), re.sub(patt, "", clip.name), tracker)
@@ -114,45 +115,6 @@ for clip in bpy.data.movieclips:
             ret = f.write(txt.replace(",  ]", " ]"))
         f.close()
     
-    if False:
-        # dictionary of all the tracks for a clip
-        trackDict = {}
-        for track in set(trsMultiTrackers+trsTrackers):
-            match = re.match(trsMultiTrackPatt, track.name)
-            if match and len(match.groups()) == 2:
-                if match.group(1) in trackDict.keys():
-                    trackDict[match.group(1)].append(track)
-                else:
-                    trackDict[match.group(1)] = [track]
-            else:
-                trackDict[track.name] = track
-        for k, v in trackDict.items():
-            filepath = "%s/%s_%s.crv"%(bpy.path.abspath('//'), re.sub(patt, "", clip.name), k)
-            print(filepath)
-            f = open(filepath, 'w')
-            offset = (0,0)
-            if isinstance(v, list):
-                for t in v:
-                    offset = reformatTrackData(t, f, offset, IS_LANDSCAPE)
-            else:
-                reformatTrackData(v, f, (0,0), IS_LANDSCAPE)
-            f.close()
-    if False:
-        filepath = "%s/%s_%s.crv"%(bpy.path.abspath('//'), re.sub(patt, "", clip.name), "persp")
-        f = open(filepath, 'w')
-        for i, m in enumerate(perspTrackers[0].markers):
-            try:
-                thisFrame = m.frame
-                txt = '%s ['% m.frame
-                for t in perspTrackers:
-                    txt += '[%s, %s], ' % ((clip.size[0]*(t.markers[thisFrame].co[0])), clip.size[1]*(1-t.markers[thisFrame].co[1]))
-                txt = txt.rstrip().rstrip(',')
-                txt += ']\n'
-                ret = f.write(txt)
-            except:
-                print("problem at frame %s"%thisFrame)
-        f.close()
-        print(clip.size[0], clip.size[1])
 
 
 
