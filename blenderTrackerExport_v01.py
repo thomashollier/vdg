@@ -95,6 +95,24 @@ for clip in bpy.data.movieclips:
                 txt = "%s [[ %s, %s]]\n" % (k, d[0], d[1])
                 ret = f.write(txt)
             f.close()
+
+    if DO_PERSP:
+        ff = -1
+        lf = 100000000
+        for tracker in perspTrackers:
+            if trackersDict[tracker]['ff'] > ff: ff = trackersDict[tracker]['ff']
+            if trackersDict[tracker]['lf'] < lf: lf = trackersDict[tracker]['lf']
+        print("------------", ff, lf)
+        filepath = "%s/%s_%s.crv"%(bpy.path.abspath('//'), re.sub(patt, "", clip.name), "persp")
+        f = open(filepath, 'w')
+        for frame in range(ff,lf):
+            txt = "%s [ " % frame 
+            for tracker in perspTrackers:
+                d = trackersDict[tracker]['data'][frame]
+                txt += "[%s, %s], " % (d[0], d[1])
+            txt += " ]\n"
+            ret = f.write(txt.replace(",  ]", " ]"))
+        f.close()
     
     if False:
         # dictionary of all the tracks for a clip
@@ -119,7 +137,7 @@ for clip in bpy.data.movieclips:
             else:
                 reformatTrackData(v, f, (0,0), IS_LANDSCAPE)
             f.close()
-    if DO_PERSP:
+    if False:
         filepath = "%s/%s_%s.crv"%(bpy.path.abspath('//'), re.sub(patt, "", clip.name), "persp")
         f = open(filepath, 'w')
         for i, m in enumerate(perspTrackers[0].markers):
