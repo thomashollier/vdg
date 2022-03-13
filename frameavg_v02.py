@@ -238,6 +238,10 @@ if not add:
 	if compMode > 0:
 		bufferAlpha = bufferAlpha/(frameRange)
 		if compMode == 2:
+			# this should be a simple un-premult but divide by zero errors
+			# and compression artifacts cause problems so I do a premult
+			# almost by zero and multiply the result by a threshold of the
+			# combined alpha
 			bufferRGB = bufferRGB / np.clip(bufferAlpha, .0001/65535.0, 1)
 			alphaStep = 1.0/frameRange
 			alphaCleanBlackStencil = np.clip((bufferAlpha-alphaStep)*(1.0+alphaStep)*frameRange, 0, 1)
