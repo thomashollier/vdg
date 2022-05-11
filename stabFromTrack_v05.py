@@ -139,7 +139,7 @@ def createTestPoints():
 	return {0:{'ff': 1, 'lf': 600, 'data': pt0}, 1: {'ff':1, 'lf': 600, 'data':pt1}}
 
 
-def orientCoordinates(xy):
+def orientCoordinates(xy, applyScale = True):
 	# swapping x and y
 	if portrait:
 		# When movie loads up rotated 90deg CCW in blender
@@ -156,94 +156,114 @@ def orientCoordinates(xy):
 		x = 1.0-float(x)
 	if yFlip:
 		y = 1.0-float(y)
-	x = x * movieWidth
-	y = y * movieHeight
+	if applyScale:
+		x = x * movieWidth
+		y = y * movieHeight
 
 	return [x,y]
 
-def readTrackerData(myFile, fo = 0):
-	# read values from file
-	with open(myFile) as file:
-		trackerData = file.readlines()
 
-	frameFirst = int(trackerData[0].split()[0])+fo
-	frameLast  = int(trackerData[-1:][0].split()[0])+fo
-	clipRange = frameLast - frameFirst
-	fileRange = len(trackerData)
-	# create dictionary of x y transforms per frame
-	trackerDict = {}
-	for line in trackerData:
-		frame = line.split()[0]
-		frame = int(frame) + fo
-		xy = eval(" ".join(line.split()[1:]))[0]
-		xy = orientCoordinates(xy)
-		trackerDict[frame]=(xy[0],xy[1])
-			
-	# fill in missing frames by copying last value
-	n = frameFirst
-	latest = 0
-	while n < frameLast:
-		if n in trackerDict.keys():
-			latest = n
-		else:
-			print("missing frame %s in track file, using frame %s" % (n, latest))
-			trackerDict[n] = trackerDict[latest]
-		n = n + 1
+def flipFlop(pnt):
+	# Default is for blender to opencv
+	# Blender vertical 0 is bottom
+	# OpenCV vertical 0 is top
+	output = [pnt[0], 1-pnt[1]]
 
-	return frameFirst, frameLast, trackerDict
+ 
+	return [pnt[0], 1-pnt[1]]
+
+def readTrackData(trackData, myRefFrame, fo = 0):
+
+	# pre sort track files into common dictionary
+	trackers = [t for t in trackData.split(':')]
+	tmpDict = {}
+	frames = set([x for x in range(4000)])
+	for i, v in enumerate(trackers):
+		tmpDict[i] = {}
+		with open(v) as file:
+	                tracker = file.readlines()
+		for f in range(len(tracker)):
+			line = tracker[f]
+			frame = line.split()[0]
+			frame = int(frame) + fo
+			data = eval("".join(line.split()[1:]))[0]
+			tmpDict[i][frame]=data
+		frames = ( frames & set(tmpDict[i]))
+	frames = list(frames)
+
+	###  Build dictionary
+	trackerData = {}
+	refFrameData = False
+	for f in range(len(frames)):
+		frame = frames[f]
+		markerData = []
+		for k in tmpDict.keys():
+			markerData.append(tmpDict[k][frame])
+		for i, xy in enumerate(markerData):
+			markerData[i] = orientCoordinates(xy, applyScale = False)	
+		trackerData[f+1]={'markerData':markerData, 'movieFrameNumber':frame}
+		if frame == myRefFrame:
+			refFrameData = markerData
+	if not refFrameData:
+		refFrameData = trackerData[1]['markerData']
+		myRefFrame = trackerData[1]['movieFrameNumber']
+	return {'ff':1, 'lf':len(trackerData), 'trackerData':trackerData, 'refData': refFrameData, 'refFrameInMovie':myRefFrame }
 
 def readPerspData(myFile, myRefFrame, fo = 0):
 	# read values from file
 	with open(myFile) as file:
 		tracker = file.readlines()
 
-	# create dictionary of x y transforms per frame
-	trackerDict = {}
+	###  Build dictionary
+	trackerData = {}
 	refFrameData = False
 	for f in range(len(tracker)):
 		line = tracker[f]
 		frame = line.split()[0]
 		frame = int(frame) + fo
-		data = eval(" ".join(line.split()[1:]))
-		for i, xy in enumerate(data):
-			data[i] = orientCoordinates(xy)	
-		trackerDict[f+1]={'markerData':data, 'movieFrameNumber':frame}
+		markerData = eval(" ".join(line.split()[1:]))
+		for i, xy in enumerate(markerData):
+			markerData[i] = orientCoordinates(xy)	
+		trackerData[f+1]={'markerData':markerData, 'movieFrameNumber':frame}
 		if frame == myRefFrame:
-			refFrameData = data
+			refFrameData = markerData
 	if not refFrameData:
-		refFrameData = trackerDict[1]['markerData']
-	return {'ff':1, 'lf':len(trackerDict), 'trackerData':trackerDict, 'refData': refFrameData}
+		refFrameData = trackerData[1]['markerData']
+		myRefFrame = trackerData[1]['movieFrameNumber']
+	return {'ff':1, 'lf':len(trackerData), 'trackerData':trackerData, 'refData': refFrameData, 'refFrameInMovie':myRefFrame }
 
-
-def getMatrix(trackerDict, frame, frameRef, w, h, posTrack = 0, rot0Track = 0, rot1Track=1):
+def getMatrix(frameData, refFrameData, w, h, posTrack = 0, rot0Track = 0, rot1Track=1):
 	rot = 0
 	scale = 1
 	
-	pnt0 = trackerDict[posTrack]['data'][(frame)]
-	ref0 = trackerDict[posTrack]['data'][(frameRef)]
-	pnt0x, pnt0y = tuple(pnt0)
-	ref0x, ref0y = tuple(ref0)
+	def normToReal(pnt):
+		return [pnt[0]*w, pnt[1]*h]
 
-	if len(trackersDict) >= 2:
-		pntR0 = trackerDict[rot0Track]['data'][(frame)]
-		refR0 = trackerDict[rot0Track]['data'][(frameRef)]
-		pntR0x, pntR0y = tuple(pntR0)
-		refR0x, refR0y = tuple(refR0)
-		pntR1 = trackerDict[rot1Track]['data'][(frame)]
-		refR1 = trackerDict[rot1Track]['data'][(frameRef)]
-		pntR1x, pntR1y = tuple(pntR1)
-		refR1x, refR1y = tuple(refR1)
+	pnt0 = normToReal(frameData[0])
+	ref0 = normToReal(refFrameData[0])
+	pnt0x, pnt0y = pnt0
+	ref0x, ref0y = ref0
+
+	if len(frameData) >= 2:
+		pntR0 = normToReal(frameData[rot0Track])
+		refR0 = normToReal(refFrameData[rot0Track])
+		pntR0x, pntR0y = (pntR0)
+		refR0x, refR0y = (refR0)
+		pntR1 = normToReal(frameData[rot1Track])
+		refR1 = normToReal(refFrameData[rot1Track])
+		pntR1x, pntR1y = (pntR1)
+		refR1x, refR1y = (refR1)
 
 		refVectorx = (refR1x - refR0x)
 		refVectory = (refR1y - refR0y)
 		pntVectorx = (pntR1x - pntR0x)
 		pntVectory = (pntR1y - pntR0y)
 
-		refAngle = (math.atan2(refVectory*h/w, refVectorx)+2*math.pi)
-		pntAngle = (math.atan2(pntVectory*h/w, pntVectorx)+2*math.pi)
+		refAngle = (math.atan2(refVectory, refVectorx)+2*math.pi)
+		pntAngle = (math.atan2(pntVectory, pntVectorx)+2*math.pi)
 
 		rot = (refAngle - pntAngle ) + rOffset
-		scale = (math.dist([refR0x,refR0y*h/w],[refR1x,refR1y*h/w]) / math.dist([pntR0x,pntR0y*h/w],[pntR1x,pntR1y*h/w]))
+		scale = (math.dist([refR0x,refR0y],[refR1x,refR1y]) / math.dist([pntR0x,pntR0y],[pntR1x,pntR1y]))
 		scale = scale * scaleMult
 
 	Moffset = np.float32([
@@ -313,7 +333,7 @@ def createLUT():
 ##     START
 ######################
 
-#--- Open input file and print metadata width and height
+### Open input file and print metadata width and height
 movie = cv2.VideoCapture(inputMovie)
 movieHeight = int(movie.get(cv2.CAP_PROP_FRAME_HEIGHT))
 movieWidth = int(movie.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -327,7 +347,7 @@ outputMovieHeight = int(movieHeight + yPad)
 xOffset += (xPad * .5)
 yOffset += (yPad * .5)
 
-#--- Load first frame and print shape
+### Load first frame and print shape
 ret, srcFrame = read_frame(movie)
 
 portrait = movieHeight > movieWidth
@@ -338,13 +358,12 @@ print("Loaded frame height by width is: \t%s X %s"% (srcFrame.shape[0], srcFrame
 print("Portrait mode is: \t\t\t%s" % portrait)
 print("Output movie height x width is: \t%s x %s"% (outputMovieHeight, outputMovieWidth))
 
-#--- Open and setup output file
+### Open and setup output file
 outputMovie = cv2.VideoWriter(
 	outputMovieFile,
 	cv2.VideoWriter_fourcc('m','p','4','v'), 30, 
 	(outputMovieWidth, outputMovieHeight)
 ) if writeOutput else None
-
 outputMaskMovie = cv2.VideoWriter(
 	outputMovieFile.replace(".mp4","_mask.mp4"),
 	cv2.VideoWriter_fourcc('m','p','4','v'), 30, 
@@ -352,18 +371,11 @@ outputMaskMovie = cv2.VideoWriter(
 ) if writeMask else None
 
 
-
-#read from tracking data file
+### Read from tracking data file
 if trackData:
-	trackers = [t for t in trackData.split(':')]
-	trackersDict = {}
-	for i, v in enumerate(trackers):
-		ff, lf, data = readTrackerData(v, frameOffset)
-		trackersDict[i] = {'ff':ff, 'lf':lf, 'data':data}
+	trackersDict = readTrackData(trackData, refFrame, frameOffset)
 elif perspData:
 	trackersDict = readPerspData(perspData, refFrame, frameOffset)
-	print(trackersDict.keys())
-
 
 if frameStart == -1:
 	frameStart = trackersDict['ff']
@@ -393,7 +405,7 @@ if gamma != 1 or exposureAdjust != 0:
 print("\n---- RANGES ----")
 print("Comp frame range: \t\t%s-%s (%s frames inclusive)"% (frameStart, frameEnd, frameRange))
 print("Movie frame range: \t\t%s-%s" % (trackersDict['trackerData'][frameStart]['movieFrameNumber'], trackersDict['trackerData'][frameEnd]['movieFrameNumber']))
-print("Reference frame: \t\t%s\n"% (refFrame))
+print("Reference frame: \t\t%s\n"% (trackersDict['refFrameInMovie']))
 
 #--- Go to first specified frame
 movieFrameCurrent = trackersDict['trackerData'][1]['movieFrameNumber']
@@ -408,6 +420,7 @@ while True:
 
 	movieFrameCurrent = trackersDict['trackerData'][frameCurrent]['movieFrameNumber']
 	sourceTrackData = trackersDict['trackerData'][frameCurrent]['markerData']
+	
 
 	if movieFrameCurrent != movieFramePrevious + 1:
 		jump_to_frame(movieFrameCurrent-1, movie)
@@ -421,33 +434,21 @@ while True:
 
 
 	if trackData:
-		mtx = getMatrix(trackersDict, frameCurrent + 1, refFrame, 1, 1, posTrack)
-		if not debug:
-			# draw red dots for tracked points
-			if False:
-				for k in trackersDict.keys():
-					x, y = getXY(trackersDict[k], frameCurrent + 1, movieWidth, movieHeight)
-					cv2.circle(srcFrame,(x,y),20,(100,0,255),-1)
-			# warp
-			dstStab = cv2.warpAffine(srcFrame, mtx, (outputMovieWidth,outputMovieHeight))
-			# draw reference on warped image
-			if False:
-				for k in trackersDict.keys():
-					x, y = getXY(trackersDict[k], refFrame, movieWidth, movieHeight)
-					cv2.circle(dstStab,(x,y),15,(100,255,0),-1)
-			dstStabShow = cv2.resize(dstStab,(int(outputMovieWidth*.25),int(outputMovieHeight*.25)))
-			# blue dot grid
-			for x in range(50,dstStabShow.shape[0],50):
-				for y in range(50,dstStabShow.shape[1],50):
-					cv2.circle(dstStabShow,(y,x),3,(255,0,0),-1)
-		else:
-			for k in trackersDict.keys():
-				x,y = getXY(trackersDict[k], frameCurrent + 1, 1, 1)
-				cv2.circle(srcFrame,(x,y),15,(100,0,255),-1)
-			dstStabShow = cv2.resize(srcFrame,(int(outputMovieWidth*.25),int(outputMovieHeight*.25)))
+		markerData = trackersDict['trackerData'][frameCurrent]['markerData']
+		refMarkerData = trackersDict['trackerData'][refFrame]['markerData']
+		for p in markerData:
+			cv2.circle(srcFrame,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(100,0,255),-1)
+		mtx = getMatrix(markerData, refMarkerData, movieWidth, movieHeight, posTrack)
+		dstStab = cv2.warpAffine(srcFrame, mtx, (outputMovieWidth,outputMovieHeight))
+		for p in refMarkerData:
+			cv2.circle(dstStab,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(255,0,100),-1)
+		dstStabShow = cv2.resize(dstStab,(int(outputMovieWidth*.25),int(outputMovieHeight*.25)))
 
 	elif perspData:
-		dstScale = np.float32([movieWidth/outputMovieWidth, movieHeight/outputMovieHeight])*scaleMult
+		ar1 = movieWidth/movieHeight
+		ar2 = outputMovieWidth/outputMovieHeight
+		dstScale = np.float32([movieWidth, movieHeight])*scaleMult
+		dstScale = np.float32([1, 1])*scaleMult
 		dstOffset = np.float32([xOffset, yOffset])
 		dstPoints = np.float32(trackersDict['refData'])*dstScale + dstOffset
 		srcPoints = np.float32(trackersDict['trackerData'][frameCurrent]['markerData'])
