@@ -177,7 +177,7 @@ def readTrackData(trackData, myRefFrame, fo = 0):
 	# pre sort track files into common dictionary
 	trackers = [t for t in trackData.split(':')]
 	tmpDict = {}
-	frames = set([x for x in range(4000)])
+	frames = set([x for x in range(8000)])
 	for i, v in enumerate(trackers):
 		tmpDict[i] = {}
 		with open(v) as file:
@@ -189,8 +189,8 @@ def readTrackData(trackData, myRefFrame, fo = 0):
 			data = eval("".join(line.split()[1:]))[0]
 			tmpDict[i][frame]=data
 		frames = ( frames & set(tmpDict[i]))
-	frames = list(frames)
-
+	frames = sorted(list(frames))
+	
 	###  Build dictionary
 	trackerData = {}
 	refFrameData = False
@@ -239,8 +239,8 @@ def getMatrix(frameData, refFrameData, w, h, posTrack = 0, rot0Track = 0, rot1Tr
 	def normToReal(pnt):
 		return [pnt[0]*w, pnt[1]*h]
 
-	pnt0 = normToReal(frameData[0])
-	ref0 = normToReal(refFrameData[0])
+	pnt0 = normToReal(frameData[posTrack])
+	ref0 = normToReal(refFrameData[posTrack])
 	pnt0x, pnt0y = pnt0
 	ref0x, ref0y = ref0
 
@@ -374,6 +374,7 @@ outputMaskMovie = cv2.VideoWriter(
 ### Read from tracking data file
 if trackData:
 	trackersDict = readTrackData(trackData, refFrame, frameOffset)
+#	print(trackersDict)
 elif perspData:
 	trackersDict = readPerspData(perspData, refFrame, frameOffset)
 
@@ -405,6 +406,7 @@ if gamma != 1 or exposureAdjust != 0:
 print("\n---- RANGES ----")
 print("Comp frame range: \t\t%s-%s (%s frames inclusive)"% (frameStart, frameEnd, frameRange))
 print("Movie frame range: \t\t%s-%s" % (trackersDict['trackerData'][frameStart]['movieFrameNumber'], trackersDict['trackerData'][frameEnd]['movieFrameNumber']))
+print("Movie frame range: \t\t%s-%s" % (trackersDict['trackerData'][frameStart], trackersDict['trackerData'][frameEnd]['movieFrameNumber']))
 print("Reference frame: \t\t%s\n"% (trackersDict['refFrameInMovie']))
 
 #--- Go to first specified frame
@@ -436,12 +438,12 @@ while True:
 	if trackData:
 		markerData = trackersDict['trackerData'][frameCurrent]['markerData']
 		refMarkerData = trackersDict['trackerData'][refFrame]['markerData']
-		for p in markerData:
-			cv2.circle(srcFrame,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(100,0,255),-1)
+#		for p in markerData:
+#			cv2.circle(srcFrame,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(100,0,255),-1)
 		mtx = getMatrix(markerData, refMarkerData, movieWidth, movieHeight, posTrack)
 		dstStab = cv2.warpAffine(srcFrame, mtx, (outputMovieWidth,outputMovieHeight))
-		for p in refMarkerData:
-			cv2.circle(dstStab,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(255,0,100),-1)
+#		for p in refMarkerData:
+#			cv2.circle(dstStab,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(255,0,100),-1)
 		dstStabShow = cv2.resize(dstStab,(int(outputMovieWidth*.25),int(outputMovieHeight*.25)))
 
 	elif perspData:
