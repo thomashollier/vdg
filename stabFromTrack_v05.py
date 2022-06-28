@@ -168,7 +168,6 @@ def flipFlop(pnt):
 	# Blender vertical 0 is bottom
 	# OpenCV vertical 0 is top
 	output = [pnt[0], 1-pnt[1]]
-
  
 	return [pnt[0], 1-pnt[1]]
 
@@ -177,7 +176,11 @@ def readTrackData(trackData, myRefFrame, fo = 0):
 	# pre sort track files into common dictionary
 	trackers = [t for t in trackData.split(':')]
 	tmpDict = {}
-	frames = set([x for x in range(8000)])
+	with open(trackers[0]) as file:
+		lines = file.readlines()
+		st = int(lines[0].split()[0])
+		frames = set([x for x in range(st, st+len(lines))])
+	# read each tracker and
 	for i, v in enumerate(trackers):
 		tmpDict[i] = {}
 		with open(v) as file:
@@ -190,7 +193,6 @@ def readTrackData(trackData, myRefFrame, fo = 0):
 			tmpDict[i][frame]=data
 		frames = ( frames & set(tmpDict[i]))
 	frames = sorted(list(frames))
-	
 	###  Build dictionary
 	trackerData = {}
 	refFrameData = False
@@ -406,7 +408,6 @@ if gamma != 1 or exposureAdjust != 0:
 print("\n---- RANGES ----")
 print("Comp frame range: \t\t%s-%s (%s frames inclusive)"% (frameStart, frameEnd, frameRange))
 print("Movie frame range: \t\t%s-%s" % (trackersDict['trackerData'][frameStart]['movieFrameNumber'], trackersDict['trackerData'][frameEnd]['movieFrameNumber']))
-print("Movie frame range: \t\t%s-%s" % (trackersDict['trackerData'][frameStart], trackersDict['trackerData'][frameEnd]['movieFrameNumber']))
 print("Reference frame: \t\t%s\n"% (trackersDict['refFrameInMovie']))
 
 #--- Go to first specified frame
