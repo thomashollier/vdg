@@ -175,8 +175,8 @@ frameCurrent = frameStart
 cap.set(cv2.CAP_PROP_POS_FRAMES,frameCurrent)
 ret,frame = cap.read()
 buffer=np.float32(frame)/255.
-bufferWhite=np.zeros_like(buffer)
-bufferBlack=np.zeros_like(buffer)
+bufferAlphaAdd=np.zeros_like(buffer)
+bufferAlphaMax=np.zeros_like(buffer)
 
 startTime = time.perf_counter()
 
@@ -211,11 +211,11 @@ while frameCurrent < frameEnd:
 		else:
 		#	alpha = np.power(np.clip(frameData*255/64,0,1),2)
 			alpha = np.power(np.clip(frameData*255/16,0,1),4)
-		bufferWhite = bufferWhite + alpha
+		bufferAlphaAdd = bufferAlphaAdd + alpha
 		if compMode == 3:
-			bufferBlack = np.maximum(alpha, bufferBlack)
+			bufferAlphaMax = np.maximum(alpha, bufferAlphaMax)
 		else:
-			bufferWhite = bufferWhite + alpha
+			bufferAlphaAdd = bufferAlphaAdd + alpha
 	
 	frameCurrent = frameCurrent + 1
 
@@ -239,14 +239,14 @@ if not add:
 	buffer = buffer/(frameRange)
 	#buffer = np.clip(buffer, .0000001, 0.9999999)
 	if compMode > 0:
-		bufferWhite = np.clip(bufferWhite/(frameRange),0.0001,0.9999)
+		bufferAlphaAdd = np.clip(bufferAlphaAdd/(frameRange),0.0001,0.9999)
 		if compMode == 2:
-			buffer = buffer/bufferWhite
+			buffer = buffer/bufferAlphaAdd
 		elif compMode == 1:	
-			buffer = 1-bufferWhite + buffer
+			buffer = 1-bufferAlphaAdd + buffer
 		elif compMode == 3:
-			buffer = buffer/bufferWhite
-			buffer = (1-bufferBlack)+buffer
+			buffer = buffer/bufferAlphaAdd
+			buffer = (1-bufferAlphaMax)+buffer
 
 	#buffer = cv2.LUT((buffer*255).astype(np.uint8), clut).astype(np.float32)/255.0
 	if bright != 1:
