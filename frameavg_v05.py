@@ -148,6 +148,18 @@ def makeXformLUT():
 	clut = np.clip(clut,0,255)
 	return clut
 
+def getAlpha(frameData, mtt, useMask):
+	'''
+	Returns a float version of the alpha from movie or computed
+	Takes in float frame and movie object
+	'''
+	if useMask:
+		ret,alpha = mtt.read()
+		alpha = alpha.astype(np.float32) / 255.0
+	else:
+		alpha = np.power(np.clip(frameData*255/16.0,0,1),4)
+	return alpha
+
 
 if softContrast != 1:
 	clut = makeContrastLUT()
@@ -159,8 +171,6 @@ if lut:
 ######
 
 cap = cv2.VideoCapture(inputMovie)
-if useMask:
-	mtt = cv2.VideoCapture(inputMovie.replace(".mp4","_mask.mp4"))
 
 inputNumberOfFrames = cap.get(cv2.CAP_PROP_FRAME_COUNT) 
 
@@ -175,8 +185,14 @@ frameCurrent = frameStart
 cap.set(cv2.CAP_PROP_POS_FRAMES,frameCurrent)
 ret,frame = cap.read()
 buffer=np.float32(frame)/255.
-bufferAlphaAdd=np.zeros_like(buffer)
-bufferAlphaMax=np.zeros_like(buffer)
+
+mtt = ''
+if useMask:
+	mtt = cv2.VideoCapture(inputMovie.replace(".mp4","_mask.mp4"))
+	mtt.set(cv2.CAP_PROP_POS_FRAMES,frameCurrent)
+alpha = getAlpha(buffer, mtt, useMask)
+bufferAlphaAdd = alpha
+bufferAlphaMax = alpha
 
 startTime = time.perf_counter()
 
@@ -205,17 +221,10 @@ while frameCurrent < frameEnd:
 		frameData = np.clip(frameData,0,1)
 	buffer = buffer + frameData
 	if compMode > 0:
-		if useMask:
-			ret,alpha = mtt.read()
-			alpha = alpha/255
-		else:
-		#	alpha = np.power(np.clip(frameData*255/64,0,1),2)
-			alpha = np.power(np.clip(frameData*255/16,0,1),4)
+		alpha = getAlpha(frameData, mtt, useMask)
 		bufferAlphaAdd = bufferAlphaAdd + alpha
 		if compMode == 3:
 			bufferAlphaMax = np.maximum(alpha, bufferAlphaMax)
-		else:
-			bufferAlphaAdd = bufferAlphaAdd + alpha
 	
 	frameCurrent = frameCurrent + 1
 
@@ -233,17 +242,18 @@ while frameCurrent < frameEnd:
 	k = cv2.waitKey(1) & 0xff
 	if k == 27 : break
 
-
-
 if not add:
-	buffer = buffer/(frameRange)
-	#buffer = np.clip(buffer, .0000001, 0.9999999)
+	
+	buffer = np.clip(buffer/(frameRange),0,1)
 	if compMode > 0:
-		bufferAlphaAdd = np.clip(bufferAlphaAdd/(frameRange),0.0001,0.9999)
-		if compMode == 2:
+		bufferAlphaAdd = np.clip(bufferAlphaAdd/(frameRange),.000003,1)
+		# comped on white BG
+		if compMode == 1:	
+			buffer = (1-bufferAlphaAdd) + buffer
+		# pre-mult and comped on black BG
+		elif compMode == 2:
 			buffer = buffer/bufferAlphaAdd
-		elif compMode == 1:	
-			buffer = 1-bufferAlphaAdd + buffer
+		# pre-mult and comped on white BG
 		elif compMode == 3:
 			buffer = buffer/bufferAlphaAdd
 			buffer = (1-bufferAlphaMax)+buffer
