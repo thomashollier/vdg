@@ -21,6 +21,7 @@ parser.add_argument('-b', '--brightness', default=1, type=float, dest='bright', 
 parser.add_argument('-cm', '--compMode', default=0, type=int, dest='compMode', help='comp mode 0=on black, 1=on white, 2=unpremult, 3=unpremult on white')
 parser.add_argument('-um', '--useMask', action='store_true', dest='useMask', help='Use movie file of mask instead of calculating it procedurally')
 
+parser.add_argument('-ag', '--alphaGamma', default=1, type=float, dest='alphaGamma', help='applies a gamma to the alpha channel before doing the final coposite')
 parser.add_argument('-softContrast', '--softContrast', default=1, type=float, dest='softContrast', help='softContrast')
 parser.add_argument('-g', '--gamma', default=1, type=float, dest='gamma', help='gamma')
 parser.add_argument('-gb', '--gammaBefore', action='store_true', dest='gammaBefore', help='apply the gamma before adding to the stack')
@@ -48,6 +49,7 @@ add = args.add
 bright = args.bright
 compMode = args.compMode
 useMask = args.useMask
+alphaGamma = args.alphaGamma
 softContrast = args.softContrast
 gamma = args.gamma
 gammaBefore = args.gammaBefore
@@ -78,6 +80,7 @@ print("frameEnd: %s" % frameEnd)
 print("add: %s" % add)
 print("compMode: %s" % compMode)
 print("useMask: %s" % useMask)
+print("alphaGamma: %s" % alphaGamma)
 print("bright: %s" % bright)
 print("gamma: %s" % gamma)
 print("gammaBefore: %s" % gammaBefore)
@@ -249,6 +252,10 @@ if not add:
 		bufferAlphaAdd = np.clip(bufferAlphaAdd/(frameRange),.000003,1)
 		# comped on white BG
 		if compMode == 1:	
+			if alphaGamma != 1:
+				buffer = buffer/bufferAlphaAdd
+				bufferAlphaAdd = np.power(bufferAlphaAdd, 1/alphaGamma)
+				buffer = buffer * bufferAlphaAdd
 			buffer = (1-bufferAlphaAdd) + buffer
 		# pre-mult and comped on black BG
 		elif compMode == 2:
