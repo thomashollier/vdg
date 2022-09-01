@@ -236,7 +236,7 @@ def readPerspData(myFile, myRefFrame, fo = 0):
 
 def getMatrix(frameData, refFrameData, w, h, posTrack = 0, rot0Track = 0, rot1Track=1):
 	rot = 0
-	scale = 1
+	scale = scaleMult
 	
 	def normToReal(pnt):
 		return [pnt[0]*w, pnt[1]*h]
@@ -263,6 +263,7 @@ def getMatrix(frameData, refFrameData, w, h, posTrack = 0, rot0Track = 0, rot1Tr
 
 		refAngle = (math.atan2(refVectory, refVectorx)+2*math.pi)
 		pntAngle = (math.atan2(pntVectory, pntVectorx)+2*math.pi)
+
 
 		rot = (refAngle - pntAngle ) + rOffset
 		scale = (math.dist([refR0x,refR0y],[refR1x,refR1y]) / math.dist([pntR0x,pntR0y],[pntR1x,pntR1y]))
