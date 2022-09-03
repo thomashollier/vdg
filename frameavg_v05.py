@@ -22,6 +22,7 @@ parser.add_argument('-cm', '--compMode', default=0, type=int, dest='compMode', h
 parser.add_argument('-um', '--useMask', action='store_true', dest='useMask', help='Use movie file of mask instead of calculating it procedurally')
 
 parser.add_argument('-ag', '--alphaGamma', default=1, type=float, dest='alphaGamma', help='applies a gamma to the alpha channel before doing the final coposite')
+parser.add_argument('-as', '--alphaSmoothstep', action='store_true', dest='alphaSmoothstep', help='applies a smoothstep to the alpha channel before doing the final coposite')
 parser.add_argument('-softContrast', '--softContrast', default=1, type=float, dest='softContrast', help='softContrast')
 parser.add_argument('-g', '--gamma', default=1, type=float, dest='gamma', help='gamma')
 parser.add_argument('-gb', '--gammaBefore', action='store_true', dest='gammaBefore', help='apply the gamma before adding to the stack')
@@ -30,9 +31,9 @@ parser.add_argument('-cc', '--claheClip', default=40, type=float, dest='claheCli
 parser.add_argument('-cs', '--claheGrid', default=8, type=int, dest='claheGrid', help='clahe contrast grid size')
 parser.add_argument('-cb', '--claheBefore', action='store_true', dest='claheBefore', help='apply clahe filter to images before adding them')
 parser.add_argument('-tk', '--token', default="avg", type=str, dest='token', help='file name token to add to input file name')
+parser.add_argument('-wa', '--writeAlpha', action='store_true', dest='writeAlpha', help='write out the composite alpha')
 parser.add_argument('inputMovie', help='input movie')
 args = parser.parse_args()
-
 
 
 prefix = args.prefix
@@ -50,6 +51,7 @@ bright = args.bright
 compMode = args.compMode
 useMask = args.useMask
 alphaGamma = args.alphaGamma
+alphaSmoothstep = args.alphaSmoothstep
 softContrast = args.softContrast
 gamma = args.gamma
 gammaBefore = args.gammaBefore
@@ -58,9 +60,18 @@ claheClip = args.claheClip
 claheGrid = args.claheGrid
 claheBefore = args.claheBefore
 token= args.token
+writeAlpha= args.writeAlpha
 inputMovie = args.inputMovie
 
+linearComp=False
 
+if linearComp:
+	import PyOpenColorIO as OCIO
+	config = OCIO.GetCurrentConfig()
+	processorIn = config.getProcessor("Output - Rec.709", "ACES - ACEScg")
+	cpuIn = processorIn.getDefaultCPUProcessor()
+	processorOut = config.getProcessor("ACES - ACEScg", "Output - Rec.709")
+	cpuOut = processorOut.getDefaultCPUProcessor()
 
 import re 
 patt = re.compile('(.mov)|(.MP4)|(.MOV)|(.mp4)')
@@ -81,6 +92,7 @@ print("add: %s" % add)
 print("compMode: %s" % compMode)
 print("useMask: %s" % useMask)
 print("alphaGamma: %s" % alphaGamma)
+print("alphaSmoothstep: %s" % alphaSmoothstep)
 print("bright: %s" % bright)
 print("gamma: %s" % gamma)
 print("gammaBefore: %s" % gammaBefore)
@@ -89,7 +101,27 @@ print("claheClip: %s" % claheClip)
 print("claheSize: %s" % claheGrid)
 print("claheBefore: %s" % claheBefore)
 print("token: %s" % token)
+print("writeAlpha: %s" % writeAlpha)
 print("output: %s\n" % output)
+
+
+import subprocess
+
+def getGPSTag(f):
+        cmd = 'exiftool -s -s -s -c "%+7f" -EXIF:GPS -GPSPosition'.split()
+        cmd.append(f)
+        print("\nRetrieving metadata from %s" % f)
+        r = subprocess.run(cmd,capture_output=True)
+        rr = r.stdout.decode("utf-8").split()
+        lat = rr[0][1:-2:]
+        lon= rr[1][1:-1:]
+        return ("%s,%s" % (lat, lon))
+
+def setGPSTag(f, coords):
+	cmd = ('exiftool -XMP:Creator="ThomasHollier" -composite:GPSPosition=%s %s' % (coords, f)).split()
+	cmd = [ x.replace("ThomasHollier", "Thomas Hollier") for x in cmd]
+	print("Adding metadata to  %s" % f)
+	r = subprocess.run(cmd,capture_output=True)
 
 
 ####
@@ -123,6 +155,19 @@ def softContrastCalc(x,k):
 
 def gammaCalc(x, k):
 	return pow(x,k)
+
+def smoothstepCalc(x):
+	return x * x * (3 - 2 * x);
+
+def makeGammaLUT(g):
+        identity = np.arange(256, dtype = np.dtype('uint8'))
+        fidentity = identity.astype(np.float32)/255
+        for i,v in enumerate(fidentity):
+                fidentity[i]=gammaCalc(v,g)*255
+        identity = fidentity.astype(np.uint8)
+        clut = np.dstack((identity, identity, identity))
+        return clut
+
 
 def makeContrastLUT():
 	identity = np.arange(256, dtype = np.dtype('uint8'))
@@ -169,6 +214,8 @@ if softContrast != 1:
 if lut:
 	xformLut = makeXformLUT()
 
+
+
 #######
 # work out in out frames
 ######
@@ -199,6 +246,14 @@ bufferAlphaMax = alpha
 
 startTime = time.perf_counter()
 
+
+if linearComp:
+	lutIn = makeGammaLUT(2.2)
+	lutOut = makeGammaLUT(0.4545)
+	#lutIn = cube.CubeLUT("../luts/sRGB2ACEScg.cube")
+	#lutOut = cube.CubeLUT("../luts/ACEScg2sRGB.cube")
+ 
+
 while frameCurrent < frameEnd:
 	ret,frame = cap.read()
 	if clahe and claheBefore:
@@ -215,6 +270,10 @@ while frameCurrent < frameEnd:
 		print("Can't receive frame (stream end?). Exiting ...")
 		break
 	frameData = frame.astype(np.float32) / 255
+	if linearComp:
+		cpuIn.applyRGB(frameData)
+		#frameData = cv2.LUT((frameData*255).astype(np.uint8), lutIn).astype(np.float32)/255.0
+		#lutIn.transform_trilinear(frameData, in_place=True)
 	if gamma != 1 and gammaBefore:
 		frameData = np.power(frameData,1/gamma)
 	if softContrast != 1:
@@ -223,7 +282,7 @@ while frameCurrent < frameEnd:
 		frameData = cv2.LUT((frameData*255).astype(np.uint8), xformLut).astype(np.float32)/255
 		frameData = np.clip(frameData,0,1)
 	buffer = buffer + frameData
-	if compMode > 0:
+	if compMode > 0 or writeAlpha:
 		alpha = getAlpha(frameData, mtt, useMask)
 		bufferAlphaAdd = bufferAlphaAdd + alpha
 		if compMode == 3:
@@ -247,15 +306,22 @@ while frameCurrent < frameEnd:
 
 if not add:
 	
-	buffer = np.clip(buffer/(frameRange),0,1)
+	buffer = buffer/frameRange
+#	buffer = np.clip(buffer/(frameRange),0,1)
+	if linearComp:
+		cpuOut.applyRGB(buffer)
+		#buffer = cv2.LUT((buffer*255).astype(np.uint8), lutOut).astype(np.float32)/255.0
+	#	lutOut.transform_trilinear(buffer, in_place=True)
+	bufferAlphaAdd = np.clip(bufferAlphaAdd/(frameRange),.000003,1)
 	if compMode > 0:
-		bufferAlphaAdd = np.clip(bufferAlphaAdd/(frameRange),.000003,1)
 		# comped on white BG
 		if compMode == 1:	
 			if alphaGamma != 1:
 				buffer = buffer/bufferAlphaAdd
 				bufferAlphaAdd = np.power(bufferAlphaAdd, 1/alphaGamma)
 				buffer = buffer * bufferAlphaAdd
+			if alphaSmoothstep:
+				bufferAlphaAdd = bufferAlphaAdd * bufferAlphaAdd * (3 - 2 * bufferAlphaAdd)
 			buffer = (1-bufferAlphaAdd) + buffer
 		# pre-mult and comped on black BG
 		elif compMode == 2:
@@ -289,10 +355,21 @@ if not add:
 buffer = np.clip(buffer * 65535, 0, 65535)
 buffer = buffer.astype(np.uint16)
 cv2.imwrite(output,buffer)
+if writeAlpha:
+	bufferAlphaAdd = np.clip(bufferAlphaAdd * 65535, 0, 65535)
+	bufferAlphaAdd = bufferAlphaAdd.astype(np.uint16)
+	cv2.imwrite(output.replace(".png", "_alpha.png"),bufferAlphaAdd)
+	
+
 
 cap.release()
 if useMask:
 	mtt.release()
+
+t=getGPSTag(inputMovie)
+setGPSTag(output,t)
+if writeAlpha:
+	setGPSTag(output.replace(".png", "_alpha.png"),t)
 
 print("\n\ncomplete:\nopen %s\n" % output)
 
