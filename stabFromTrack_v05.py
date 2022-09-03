@@ -103,6 +103,23 @@ print("outputMovie: %s" % outputMovieFile)
 ##     Functions
 ######################
 
+import subprocess
+
+def getGPSTag(f):
+	cmd = 'exiftool -s -s -s -c "%+7f" -EXIF:GPS -GPSPosition'.split()
+	cmd.append(f)
+	print("\nRetrieving metadata from %s" % f)
+	r = subprocess.run(cmd,capture_output=True)
+	rr = r.stdout.decode("utf-8").split()
+	lat = rr[0][1:-2:]
+	lon= rr[1][1:-1:]
+	return ("%s,%s" % (lat, lon))
+
+def setGPSTag(f, coords):
+	cmd = ('exiftool -composite:GPSPosition=%s %s' % (coords, f)).split()
+	print("Adding metadata to  %s" % f)
+	r = subprocess.run(cmd,capture_output=True)
+
 def get_movie_range(movie):
 	movie.set(cv2.CAP_PROP_POS_AVI_RATIO,1)
 	length = movie.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -496,6 +513,9 @@ while True:
 movie.release()
 outputMovie.release() 						if writeOutput else None
 outputMaskMovie.release() 					if writeMask else None
+
+t=getGPSTag(inputMovie)
+setGPSTag(outputMovieFile,t)
 
 print("\ndone")
 print("complete:")
