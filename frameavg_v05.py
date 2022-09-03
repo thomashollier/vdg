@@ -118,8 +118,8 @@ def getGPSTag(f):
         return ("%s,%s" % (lat, lon))
 
 def setGPSTag(f, coords):
-	cmd = ('exiftool -XMP:Creator="ThomasHollier" -composite:GPSPosition=%s %s' % (coords, f)).split()
-	cmd = [ x.replace("ThomasHollier", "Thomas Hollier") for x in cmd]
+	cmd = ('exiftool -copyright="©2022___Relentless___Play.___All___rights___reserved" -XMP:Creator="Thomas___Hollier" -EXIF:Software=frameavg_v05 -composite:GPSPosition=%s %s' % (coords, f)).split()
+	cmd = [ x.replace("___", " ") for x in cmd]
 	print("Adding metadata to  %s" % f)
 	r = subprocess.run(cmd,capture_output=True)
 
