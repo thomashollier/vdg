@@ -4,8 +4,9 @@
 
 import cv2
 import numpy as np
-import pycubelut as cube
+#import pycubelut as cube
 import argparse, sys, time
+import os
 
 
 parser = argparse.ArgumentParser(description='Process some integers.')
@@ -108,21 +109,30 @@ print("output: %s\n" % output)
 import subprocess
 
 def getGPSTag(f):
-        cmd = 'exiftool -s -s -s -c "%+7f" -EXIF:GPS -GPSPosition'.split()
-        cmd.append(f)
-        print("\nRetrieving metadata from %s" % f)
-        r = subprocess.run(cmd,capture_output=True)
-        rr = r.stdout.decode("utf-8").split()
-        lat = rr[0][1:-2:]
-        lon= rr[1][1:-1:]
-        return ("%s,%s" % (lat, lon))
+	cmd = 'exiftool -s -s -s -c "%+7f" -EXIF:GPS -GPSPosition'.split()
+	cmd.append(f)
+	print("\nRetrieving metadata from %s" % f)
+	r = subprocess.run(cmd,capture_output=True)
+	rr = r.stdout.decode("utf-8").split()
+	try:
+		lat = rr[0][1:-2:]
+		lon= rr[1][1:-1:]
+		return ("%s,%s" % (lat, lon))
+	except:
+		print("No GPSPosition tag found, returning False")
+		return(False)
 
 def setGPSTag(f, coords):
-	cmd = ('exiftool -copyright="©2022___Relentless___Play.___All___rights___reserved" -XMP:Creator="Thomas___Hollier" -EXIF:Software=frameavg_v05 -composite:GPSPosition=%s %s' % (coords, f)).split()
+	if not coords:
+		if os.environ['GPS_POSITION']:
+			print("--- No GPS position tag found in file, using GPS_POSITION env variable")
+			coords=os.environ['GPS_POSITION']
+		else:
+			coords=(1,1)
+	cmd = ('exiftool -overwrite_original -subject+="Collapse" -subject+="TimeCollapse" -copyright="©2022___Relentless___Play.___All___rights___reserved" -XMP:Creator="Thomas___Hollier" -EXIF:Software=frameavg_v05 -composite:GPSPosition=%s %s' % (coords, f)).split()
 	cmd = [ x.replace("___", " ") for x in cmd]
 	print("Adding metadata to  %s" % f)
 	r = subprocess.run(cmd,capture_output=True)
-
 
 ####
 #### define color correction luts
