@@ -42,6 +42,7 @@ for clip in bpy.data.movieclips:
         yIdx = 0
 
 
+    print("\nProcessing trackers for clip %s\n"% clip.name)
     # build dictionary of all track data
     # [trackname]['ff']
     #            ['lf']
@@ -56,14 +57,16 @@ for clip in bpy.data.movieclips:
         lf = -1
         data = {}
         for marker in track.markers:
-            if marker.frame < ff: ff = marker.frame
-            if marker.frame > lf: lf = marker.frame
             data[marker.frame] = marker.co
         for k in data.keys():
-            #if k-1 in data.keys() and k+1  in data.keys():
-            trackersDict[track.name]['data'][k] = data[k]
+            if k-1 in data.keys() and k+1  in data.keys():
+                trackersDict[track.name]['data'][k] = data[k]
+        for k in trackersDict[track.name]['data'].keys():
+            if k < ff: ff = k
+            if k > lf: lf = k
         trackersDict[track.name]['ff'] = ff
         trackersDict[track.name]['lf'] = lf
+        print("%s %s %s"% (track.name, ff, lf))
 
 
     # Split them out in types of tracking data
@@ -71,42 +74,45 @@ for clip in bpy.data.movieclips:
     DO_TRS=False
     DO_MULTI_TRS=False
     # process the types of trackers
+    print("")
     perspTrackers = [t for t in trackersDict.keys() if re.match(perspTrackPatt, t) != None]
     if len(perspTrackers)>3:
-        print("Clip %s: found %s perspective trackers." % (clip.name,len(perspTrackers)))
+        print("%s perspective trackers" % (len(perspTrackers)))
         DO_PERSP=True
     elif len(perspTrackers)>0:
-        print("Clip %s: need at least 4 perspective trackers. Only %s found." % (clip.name,len(perspTrackers)))
+        print("need at least 4 perspective trackers. Only %s found." % (len(perspTrackers)))
     else:
-        print("Clip %s: found no persp trackers." % (clip.name))
+        print("0 persp trackers")
 
     trsMultiTrackers = [t for t in trackersDict.keys() if re.match(trsMultiTrackPatt, t) != None]
     if len(trsMultiTrackers)>1:
-        print("Clip %s: found %s trs multi trackers." % (clip.name,len(trsMultiTrackers)))
+        print("%s trs multi trackers" % (len(trsMultiTrackers)))
         DO_TRS=True
     elif len(trsMultiTrackers)==1:
-        print("Clip %s: found only 1 trs multi tracker. Deosn't make sense." % (clip.name))
+        print("only 1 trs multi tracker. Deosn't make sense")
     else:
-        print("Clip %s: found no multi trs trackers." % (clip.name))
+        print("0 multi trs trackers")
     
     trsTrackers = [t for t in trackersDict.keys() if re.match(trsTrack, t) != None]
     if len(trsTrackers)>0:
-        print("Clip %s: found %s trs trackers." % (clip.name,len(trsTrackers)))
+        print("%s trs trackers" % len(trsTrackers))
         DO_TRS=True
     else:
-        print("Clip %s: found no  trs trackers." % (clip.name))
+        print("0 trs trackers")
 
 
     # Write out regular TRS tracking data (frameNum x y)
     if DO_TRS:
         for tracker in trsTrackers:
             filepath = "%s/%s_%s.crv"%(bpy.path.abspath('//'), re.sub(patt, "", clip.name), tracker)
-            print("doing", filepath)
+            print("Writing", filepath)
             f = open(filepath, 'w')
             for k,d in trackersDict[tracker]['data'].items():
                 txt = "%s [[ %s, %s]]\n" % (k, d[xIdx], d[yIdx])
                 ret = f.write(txt)
             f.close()
+            print("Done")
+
 
     # Write out regular TRS tracking data (frameNum x y)
     if DO_PERSP:
@@ -117,6 +123,7 @@ for clip in bpy.data.movieclips:
             if trackersDict[tracker]['lf'] < lf: lf = trackersDict[tracker]['lf']
         print("------------", ff, lf)
         filepath = "%s/%s_%s.crv"%(bpy.path.abspath('//'), re.sub(patt, "", clip.name), "persp")
+        print("Writing", filepath)
         f = open(filepath, 'w')
         for frame in range(ff,lf):
             try:
@@ -128,6 +135,7 @@ for clip in bpy.data.movieclips:
                 ret = f.write(txt.replace(",  ]", " ]"))
             except:
                 pass
+        print("Done")
         f.close()
     
 
