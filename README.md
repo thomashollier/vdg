@@ -13,6 +13,10 @@ cd ~/Documents/slitscans/vdg
 mkdir venv && cd venv
 pyenv global 3.9.16
 python -m venv $(pwd)
+
+# the path to the python command is a link to the
+# pyenv version of the binary
+
 source venv/bin/activate 
 pip install opencv-python
 ```
