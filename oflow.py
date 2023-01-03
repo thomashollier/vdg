@@ -1,4 +1,5 @@
-#!/usr/bin/python
+#!/usr/local/bin/python3
+##!/usr/bin/python
 
 '''
 example to show optical flow estimation using DISOpticalFlow
@@ -49,6 +50,8 @@ def main():
         fn = 0
 
     inputMovie = sys.argv[1]
+    outputMovie = inputMovie.replace(".mov", "-flow.MOV")
+    outputMovie = outputMovie.replace(".mp4", "-flow.MP4")
     outputMovie = inputMovie.replace(".MOV", "-flow.MOV")
     outputMovie = outputMovie.replace(".MP4", "-flow.MP4")
     print(inputMovie, outputMovie)
@@ -107,12 +110,12 @@ def main():
             flow = inst.calc(prevgray, gray, None)
         prevgray = gray
 
-        for n in range(20):
-            newim = warp_flow(prev, flow, n/20.0)
-            cv2.imwrite("test.%04d.png" % n , newim) 
-            print("test.%04d.png" % n)
-        cv2.imwrite("test.%04d.png" % 22 , img)	
-        exit()
+#        for n in range(20):
+#            newim = warp_flow(prev, flow, n/20.0)
+#            cv2.imwrite("test.%04d.png" % n , newim) 
+#            print("test.%04d.png" % n)
+#        cv2.imwrite("test.%04d.png" % 22 , img)	
+#        exit()
 
         ch = cv2.waitKey(5)
         if ch == 27:

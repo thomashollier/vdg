@@ -34,10 +34,15 @@ for clip in bpy.data.movieclips:
     # movie orientation
     if clip.size[0]>clip.size[1]:
         IS_LANDSCAPE=True
+        xIdx = 0
+        yIdx = 1
     else:
         IS_LANDSCAPE=False
+        xIdx = 1
+        yIdx = 0
 
 
+    # build dictionary of all track data
     # [trackname]['ff']
     #            ['lf']
     #            ['data'][frame]
@@ -57,6 +62,7 @@ for clip in bpy.data.movieclips:
         trackersDict[track.name]['lf'] = lf
 
 
+    # Split them out in types of tracking data
     DO_PERSP=False
     DO_TRS=False
     DO_MULTI_TRS=False
@@ -87,16 +93,18 @@ for clip in bpy.data.movieclips:
         print("Clip %s: found no  trs trackers." % (clip.name))
 
 
+    # Write out regular TRS tracking data (frameNum x y)
     if DO_TRS:
         for tracker in trsTrackers:
             filepath = "%s/%s_%s.crv"%(bpy.path.abspath('//'), re.sub(patt, "", clip.name), tracker)
             print("doing", filepath)
             f = open(filepath, 'w')
             for k,d in trackersDict[tracker]['data'].items():
-                txt = "%s [[ %s, %s]]\n" % (k, d[0], d[1])
+                txt = "%s [[ %s, %s]]\n" % (k, d[xIdx], d[yIdx])
                 ret = f.write(txt)
             f.close()
 
+    # Write out regular TRS tracking data (frameNum x y)
     if DO_PERSP:
         ff = -1
         lf = 100000000
@@ -110,7 +118,7 @@ for clip in bpy.data.movieclips:
             txt = "%s [ " % frame 
             for tracker in perspTrackers:
                 d = trackersDict[tracker]['data'][frame]
-                txt += "[%s, %s], " % (d[0], d[1])
+                txt += "[%s, %s], " % (d[xIdx], d[yIdx])
             txt += " ]\n"
             ret = f.write(txt.replace(",  ]", " ]"))
         f.close()

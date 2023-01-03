@@ -220,6 +220,8 @@ def getMatrix(trackerDict, frame, frameRef, w, h, posTrack = 0, rot0Track = 0, r
 	pnt0x, pnt0y = tuple(pnt0)
 	ref0x, ref0y = tuple(ref0)
 
+	print(pnt0)
+
 	if len(trackersDict) >= 2:
 		pntR0 = trackerDict[rot0Track]['data'][(frame)]
 		refR0 = trackerDict[rot0Track]['data'][(frameRef)]
@@ -237,11 +239,14 @@ def getMatrix(trackerDict, frame, frameRef, w, h, posTrack = 0, rot0Track = 0, r
 
 		refAngle = (math.atan2(refVectory*h/w, refVectorx)+2*math.pi)
 		pntAngle = (math.atan2(pntVectory*h/w, pntVectorx)+2*math.pi)
+		#refAngle = (math.atan2(refVectory, refVectorx)+2*math.pi)
+		#pntAngle = (math.atan2(pntVectory, pntVectorx)+2*math.pi)
 
 		rot = (refAngle - pntAngle ) + rOffset
 		scale = (math.dist([refR0x,refR0y*h/w],[refR1x,refR1y*h/w]) / math.dist([pntR0x,pntR0y*h/w],[pntR1x,pntR1y*h/w]))
+		#scale = (math.dist([refR0x,refR0y],[refR1x,refR1y]) / math.dist([pntR0x,pntR0y],[pntR1x,pntR1y]))
 		scale = scale * scaleMult
-
+		print("------      ",h/w)
 	Moffset = np.float32([
 		[1,     0,      -pnt0x],
 		[0,     1,      -pnt0y],

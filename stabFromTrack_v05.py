@@ -11,6 +11,7 @@ parser = argparse.ArgumentParser(description="Stabilize a movie file based on va
 parser.add_argument('-fs', '--frameStart', default=-1, type=int, dest='frameStart', help='first frame of the stabilize')  
 parser.add_argument('-fe', '--frameEnd',default=-1, type=int, dest='frameEnd', help='first frame of the stabilize')   
 parser.add_argument('-fo', '--frameOffset',default=0, type=int, dest='frameOffset', help='offset the frame lookup when playback rate is varying')   
+parser.add_argument('-st', '--frameStep',default=1, type=int, dest='frameStep', help='Skip frames in sequence')   
 
 inputStyle = parser.add_mutually_exclusive_group()
 inputStyle.add_argument('-td', '--trackData',default=False, type=str, dest='trackData', help='frame, X and Y values')   
@@ -22,6 +23,8 @@ parser.add_argument('-xr', '--xReverse', action='store_true',dest='xReverse', he
 parser.add_argument('-yf', '--yFlip', action='store_true', dest='yFlip', help='invert the y value in case image was tracked with vertical flip')   
 parser.add_argument('-yr', '--yReverse', action='store_true', dest='yReverse', help='frame, X and Y values')   
 parser.add_argument('-db', '--debug', action='store_true', dest='debug', help='frame, X and Y values')   
+parser.add_argument('-xi', '--xIgnore',action='store_true', dest='xIgnore', help='do not track in X direction')
+parser.add_argument('-yi', '--yIgnore',action='store_true', dest='yIgnore', help='do not track in Y direction')
 parser.add_argument('-xo', '--xOffset',default=0, type=float, dest='xOffset', help='offset in x position')   
 parser.add_argument('-yo', '--yOffset',default=0, type=float, dest='yOffset', help='offset in y position')
 parser.add_argument('-xp', '--xPad',default=0, type=float, dest='xPad', help='pad in width, default = 0, 1 = half of width on both side')   
@@ -45,6 +48,7 @@ args = parser.parse_args()
 frameStart = args.frameStart
 frameEnd = args.frameEnd
 frameOffset = args.frameOffset
+frameStep = args.frameStep
 writeOutput = args.writeOutput
 writeMask = args.writeMask
 trackData = args.trackData
@@ -55,6 +59,8 @@ xReverse = args.xReverse
 yFlip = args.yFlip
 yReverse = args.yReverse
 debug = args.debug
+xIgnore = args.xIgnore
+yIgnore = args.yIgnore
 xOffset = args.xOffset
 yOffset = args.yOffset
 xPad = args.xPad
@@ -78,6 +84,7 @@ print("inputMovie: %s" % inputMovie)
 print("frameStart: %s" % frameStart)
 print("frameEnd: %s" % frameEnd)
 print("frameOffset: %s" % frameOffset)
+print("frameStep: %s" % frameStep)
 print("trackData: %s" % trackData)
 print("perspData: %s" % perspData)
 print("posTrack: %s" % posTrack)
@@ -87,6 +94,8 @@ print("yFlip: %s" % yFlip)
 print("yReverse: %s" % yReverse)
 print("xOffset: %s" % xOffset)
 print("yOffset: %s" % yOffset)
+print("xIgnore: %s" % xIgnore)
+print("yIgnore: %s" % yIgnore)
 print("rOffset: %s" % rOffset)
 print("scaleMult: %s" % scaleMult)
 print("gamma: %s" % gamma)
@@ -96,7 +105,6 @@ print("setLandscape: %s" % setLandscape)
 print("setPortrait: %s" % setPortrait)
 print("writeMask: %s" % writeMask)
 print("outputMovie: %s" % outputMovieFile)
-
 
 
 ######################
@@ -111,14 +119,22 @@ def getGPSTag(f):
 	print("\nRetrieving metadata from %s" % f)
 	r = subprocess.run(cmd,capture_output=True)
 	rr = r.stdout.decode("utf-8").split()
-	lat = rr[0][1:-2:]
-	lon= rr[1][1:-1:]
-	return ("%s,%s" % (lat, lon))
+	try:
+		lat = rr[0][1:-2:]
+		lon= rr[1][1:-1:]
+		return ("%s,%s" % (lat, lon))
+	except:
+		print("No GPSPosition tag, returning False")
+		return(False)
+
 
 def setGPSTag(f, coords):
-	cmd = ('exiftool -composite:GPSPosition=%s %s' % (coords, f)).split()
-	print("Adding metadata to  %s" % f)
-	r = subprocess.run(cmd,capture_output=True)
+	if coords:
+		cmd = ('exiftool -overwrite_original -composite:GPSPosition=%s %s' % (coords, f)).split()
+		print("Adding metadata to  %s" % f)
+		r = subprocess.run(cmd,capture_output=True)
+	else:
+		print("No GPS metadata to write")
 
 def get_movie_range(movie):
 	movie.set(cv2.CAP_PROP_POS_AVI_RATIO,1)
@@ -262,6 +278,10 @@ def getMatrix(frameData, refFrameData, w, h, posTrack = 0, rot0Track = 0, rot1Tr
 	ref0 = normToReal(refFrameData[posTrack])
 	pnt0x, pnt0y = pnt0
 	ref0x, ref0y = ref0
+	if xIgnore:
+		pnt0x = ref0x 
+	if yIgnore:
+		pnt0y = ref0y 
 
 	if len(frameData) >= 2:
 		pntR0 = normToReal(frameData[rot0Track])
@@ -379,9 +399,10 @@ print("Portrait mode is: \t\t\t%s" % portrait)
 print("Output movie height x width is: \t%s x %s"% (outputMovieHeight, outputMovieWidth))
 
 ### Open and setup output file
+#filePath,CV_FOURCC('A','V','C','1'),30, cv::Size(1920,1080),isColor
 outputMovie = cv2.VideoWriter(
 	outputMovieFile,
-	cv2.VideoWriter_fourcc('m','p','4','v'), 30, 
+	cv2.VideoWriter_fourcc('a','v','c','1'), 30, 
 	(outputMovieWidth, outputMovieHeight)
 ) if writeOutput else None
 outputMaskMovie = cv2.VideoWriter(
@@ -436,7 +457,7 @@ framePrevious = 0
 
 # MAIN LOOP
 while True:
-	if frameCurrent == frameEnd + 1:
+	if frameCurrent >= frameEnd + 1:
 		break
 
 	movieFrameCurrent = trackersDict['trackerData'][frameCurrent]['movieFrameNumber']
@@ -498,7 +519,7 @@ while True:
 	sys.stdout.write("\rFrame %4d (source frame: %s) of %s -- %.02f%% complete -- %s seconds remaining" % (1+frameCurrent-frameStart, movieFrameCurrent, frameRange, percentDone, remainingTime))
 	#sys.stdout.flush()
 
-	frameCurrent = frameCurrent + 1
+	frameCurrent = frameCurrent + frameStep 
 	movieFramePrevious = movieFrameCurrent  
 	
 

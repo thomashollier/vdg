@@ -18,7 +18,7 @@ parser.add_argument('-fo', '--frameOffset', default=0, type=int, dest='frameOffs
 parser.add_argument('-fr', '--frameRange', default=1000, type=int, dest='frameRange', help='number of frame to average')
 parser.add_argument('-ad', '--add', default=False, type=bool, dest='add', help='do not devide result by number of frames')
 parser.add_argument('-b', '--brightness', default=1, type=float, dest='bright', help='multiply')
-parser.add_argument('-cm', '--compMode', default=0, type=int, dest='compMode', help='comp mode 0=on black, 1=on white, 2=unpremuly')
+parser.add_argument('-cm', '--compMode', default=0, type=int, dest='compMode', help='comp mode 0=on black, 1=on white, 2=unpremult, 3=unpremult on white')
 parser.add_argument('-um', '--useMask', action='store_true', dest='useMask', help='Use movie file of mask instead of calculating it procedurally')
 
 parser.add_argument('-softContrast', '--softContrast', default=1, type=float, dest='softContrast', help='softContrast')
@@ -176,6 +176,7 @@ cap.set(cv2.CAP_PROP_POS_FRAMES,frameCurrent)
 ret,frame = cap.read()
 buffer=np.float32(frame)/255.
 bufferWhite=np.ones_like(buffer)
+bufferBlack=np.zeros_like(buffer)
 
 startTime = time.perf_counter()
 
@@ -211,6 +212,10 @@ while frameCurrent < frameEnd:
 		#	alpha = np.power(np.clip(frameData*255/64,0,1),2)
 			alpha = np.power(np.clip(frameData*255/16,0,1),4)
 		bufferWhite = bufferWhite + alpha
+		if compMode == 3:
+			bufferBlack = np.maximum(alpha, bufferBlack)
+		else:
+			bufferWhite = bufferWhite + alpha
 	
 	frameCurrent = frameCurrent + 1
 
@@ -232,13 +237,16 @@ while frameCurrent < frameEnd:
 
 if not add:
 	buffer = buffer/(frameRange)
-	buffer = np.clip(buffer, .0001, 0.9999)
+	#buffer = np.clip(buffer, .0000001, 0.9999999)
 	if compMode > 0:
 		bufferWhite = np.clip(bufferWhite/(frameRange),0.0001,0.9999)
 		if compMode == 2:
 			buffer = buffer/bufferWhite
 		elif compMode == 1:	
 			buffer = 1-bufferWhite + buffer
+		elif compMode == 3:
+			buffer = buffer/bufferWhite
+			buffer = (1-bufferBlack)+buffer
 
 	#buffer = cv2.LUT((buffer*255).astype(np.uint8), clut).astype(np.float32)/255.0
 	if bright != 1:
