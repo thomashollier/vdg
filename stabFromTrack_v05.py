@@ -18,12 +18,17 @@ inputStyle.add_argument('-td', '--trackData',default=False, type=str, dest='trac
 inputStyle.add_argument('-pd', '--perspData',default=False, type=str, dest='perspData', help='frame + multiple track points for perspective warp')   
 
 parser.add_argument('-pt', '--posTrack',default=0, type=int, dest='posTrack', help='which track to use for position')   
+parser.add_argument('-db', '--debug', action='store_true', dest='debug', help='frame, X and Y values')   
+
+parser.add_argument('-sl', '--setLandscape', action='store_true', dest='setLandscape', help='force landscape orientation')   
+parser.add_argument('-sp', '--setPortrait', action='store_true', dest='setPortrait', help='force portrait orientation')   
+
+parser.add_argument('-sw', '--swapXY', action='store_true',dest='swapXY', help='swap the XY values in the tracking curves')   
 parser.add_argument('-xf', '--xFlip', action='store_true', dest='xFlip', help='invert the x value in case image was tracked with horizontal flip')   
 parser.add_argument('-xr', '--xReverse', action='store_true',dest='xReverse', help='')   
+parser.add_argument('-xi', '--xIgnore',action='store_true', dest='xIgnore', help='do not track in X direction')
 parser.add_argument('-yf', '--yFlip', action='store_true', dest='yFlip', help='invert the y value in case image was tracked with vertical flip')   
 parser.add_argument('-yr', '--yReverse', action='store_true', dest='yReverse', help='frame, X and Y values')   
-parser.add_argument('-db', '--debug', action='store_true', dest='debug', help='frame, X and Y values')   
-parser.add_argument('-xi', '--xIgnore',action='store_true', dest='xIgnore', help='do not track in X direction')
 parser.add_argument('-yi', '--yIgnore',action='store_true', dest='yIgnore', help='do not track in Y direction')
 parser.add_argument('-xo', '--xOffset',default=0, type=float, dest='xOffset', help='offset in x position')   
 parser.add_argument('-yo', '--yOffset',default=0, type=float, dest='yOffset', help='offset in y position')
@@ -34,8 +39,6 @@ parser.add_argument('-sm', '--scaleMult',default=1, type=float, dest='scaleMult'
 parser.add_argument('-g', '--gamma',default=1, type=float, dest='gamma', help='gamma correction')
 parser.add_argument('-ev', '--exposureAdjust',default=0, type=float, dest='exposureAdjust', help='exposure adjustment in STOPS')
 parser.add_argument('-rf', '--refFrame',default=-1, type=int, dest='refFrame', help='frame to use as reference (default is "frameStart"')   
-parser.add_argument('-sl', '--setLandscape', action='store_true', dest='setLandscape', help='force landscape orientation')   
-parser.add_argument('-sp', '--setPortrait', action='store_true', dest='setPortrait', help='force portrait orientation')   
 parser.add_argument('-tk', '--token',default="stab", type=str, dest='token', help='token filename extension')   
 parser.add_argument('-wm', '--writeMask', action='store_true', dest='writeMask', help='first frame of the stabilize')
 parser.add_argument('-wo', '--writeOutput', action='store_true', dest='writeOutput', help='first frame of the stabilize')
@@ -54,13 +57,14 @@ writeMask = args.writeMask
 trackData = args.trackData
 perspData = args.perspData
 posTrack = args.posTrack
+swapXY = args.swapXY
 xFlip = args.xFlip
 xReverse = args.xReverse
 yFlip = args.yFlip
-yReverse = args.yReverse
-debug = args.debug
 xIgnore = args.xIgnore
 yIgnore = args.yIgnore
+yReverse = args.yReverse
+debug = args.debug
 xOffset = args.xOffset
 yOffset = args.yOffset
 xPad = args.xPad
@@ -88,13 +92,16 @@ print("frameStep: %s" % frameStep)
 print("trackData: %s" % trackData)
 print("perspData: %s" % perspData)
 print("posTrack: %s" % posTrack)
+print("swapXY: %s" % swapXY)
+print("xPad: %s" % xPad)
+print("xOffset: %s" % xOffset)
 print("xFlip: %s" % xFlip)
 print("xReverse: %s" % xReverse)
+print("xIgnore: %s" % xIgnore)
+print("yPad: %s" % yPad)
+print("yOffset: %s" % yOffset)
 print("yFlip: %s" % yFlip)
 print("yReverse: %s" % yReverse)
-print("xOffset: %s" % xOffset)
-print("yOffset: %s" % yOffset)
-print("xIgnore: %s" % xIgnore)
 print("yIgnore: %s" % yIgnore)
 print("rOffset: %s" % rOffset)
 print("scaleMult: %s" % scaleMult)
@@ -182,6 +189,8 @@ def orientCoordinates(xy, applyScale = True):
 		# When movie shows up landscape right side up in blender
 		x = xy[0]
 		y = 1-xy[1]
+	if swapXY:
+		y, x = x, y
 	# inversing x and y coordinates
 	# x and y coordinates now refer to the x and y coordinates as they
 	# appear in the window being displayed in this script (not in blender)
@@ -478,14 +487,18 @@ while True:
 	if trackData:
 		markerData = trackersDict['trackerData'][frameCurrent]['markerData']
 		refMarkerData = trackersDict['trackerData'][refFrame]['markerData']
-#		for p in markerData:
-#			cv2.circle(srcFrame,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(100,0,255),-1)
-		mtx = getMatrix(markerData, refMarkerData, movieWidth, movieHeight, posTrack)
-		dstStab = cv2.warpAffine(srcFrame, mtx, (outputMovieWidth,outputMovieHeight))
-#		for p in refMarkerData:
-#			cv2.circle(dstStab,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(255,0,100),-1)
-		dstStabShow = cv2.resize(dstStab,(int(outputMovieWidth*.25),int(outputMovieHeight*.25)))
-
+		if not debug:
+			mtx = getMatrix(markerData, refMarkerData, movieWidth, movieHeight, posTrack)
+			dstStab = cv2.warpAffine(srcFrame, mtx, (outputMovieWidth,outputMovieHeight))
+			dstStabShow = cv2.resize(dstStab,(int(outputMovieWidth*.25),int(outputMovieHeight*.25)))
+		else:
+			print(markerData)
+			for p in markerData:
+				cv2.circle(srcFrame,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(100,0,255),-1)
+			for p in refMarkerData:
+				cv2.circle(srcFrame,(int(p[0]*movieWidth),int((p[1])*movieHeight)),20,(255,0,100),-1)
+			dstStabShow = cv2.resize(srcFrame,(int(outputMovieWidth*.25),int(outputMovieHeight*.25)))
+			dstStab = srcFrame
 	elif perspData:
 		ar1 = movieWidth/movieHeight
 		ar2 = outputMovieWidth/outputMovieHeight
