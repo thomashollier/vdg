@@ -129,7 +129,7 @@ def setGPSTag(f, coords):
 			coords=os.environ['GPS_POSITION']
 		else:
 			coords=(1,1)
-	cmd = ('exiftool -overwrite_original -subject+="Collapse" -subject+="TimeCollapse" -copyright="©2022___Relentless___Play.___All___rights___reserved" -XMP:Creator="Thomas___Hollier" -EXIF:Software=frameavg_v05 -composite:GPSPosition=%s %s' % (coords, f)).split()
+	cmd = ('exiftool -overwrite_original -subject+=Collapse -subject+=TimeCollapse -copyright=©2023___Relentless___Play.___All___rights___reserved -XMP:Creator=Thomas___Hollier -EXIF:Software=%s -composite:GPSPosition=%s %s' % ("___".join(sys.argv), coords, f)).split()
 	cmd = [ x.replace("___", " ") for x in cmd]
 	print("Adding metadata to  %s" % f)
 	r = subprocess.run(cmd,capture_output=True)
