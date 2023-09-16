@@ -22,6 +22,8 @@ pip install opencv-python
 pip install pycubelut
 ```
 
+rr
+
 Run python interpreter from the command line rather than from within the script file
 
 (pycubelut will fail because of numpy errors. fix the files and it will work)
