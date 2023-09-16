@@ -24,4 +24,5 @@ pip install pycubelut
 
 Run python interpreter from the command line rather than from within the script file
 
-(pycubelut will fail but fix the files with the numpy errors and it fixes)
+(The pycubelut package will fail on load because of a numpy change 
+but fixing the files indicated in the error message addresses the problem)
