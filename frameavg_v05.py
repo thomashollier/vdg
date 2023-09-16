@@ -4,9 +4,14 @@
 
 import cv2
 import numpy as np
-#import pycubelut as cube
+import pycubelut as cube
 import argparse, sys, time
 import os
+import sys
+
+print(np.__file__)
+print(sys.path)
+
 
 
 parser = argparse.ArgumentParser(description='Process some integers.')
