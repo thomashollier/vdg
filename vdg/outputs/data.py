@@ -154,9 +154,8 @@ class TrackersOutput(BaseOutput):
     """
     
     def __init__(self, spec: OutputSpec, input_path: str):
-        super().__init__(spec, input_path)
-        
-        # Parse options
+        # Parse options BEFORE calling super().__init__()
+        # because _resolve_output_path needs these values
         self.track_type = spec.get_int('type', 1)
         if self.track_type not in (1, 2):
             raise ValueError(f"Invalid tracker type: {self.track_type}. Must be 1 or 2.")
@@ -171,9 +170,15 @@ class TrackersOutput(BaseOutput):
         
         self.filter_width = spec.get_float('filter', 0)
         
-        # Generate output paths
-        stem = self.input_path.stem
-        if self.track_type == 1:
+        # Generate output paths BEFORE super().__init__()
+        input_path_obj = Path(input_path)
+        stem = input_path_obj.stem
+        
+        # Check for custom filename first
+        filename = spec.get('filename')
+        if filename:
+            self.output_paths = [Path(filename)]
+        elif self.track_type == 1:
             self.output_paths = [Path(f"{stem}_track01.crv")]
         else:
             self.output_paths = [
@@ -181,14 +186,12 @@ class TrackersOutput(BaseOutput):
                 Path(f"{stem}_track02.crv"),
             ]
         
-        # Override with filename if specified
-        filename = spec.get('filename')
-        if filename:
-            self.output_paths = [Path(filename)]
-        
         self.data_buffers: list[list[tuple[int, float, float]]] = []
         self.video_width = 0
         self.video_height = 0
+        
+        # Now call super().__init__() - it will use our _resolve_output_path
+        super().__init__(spec, input_path)
     
     def _get_default_suffix(self) -> str:
         return "_track01"
