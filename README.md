@@ -1,21 +1,127 @@
 # VDG - Video Development and Grading Toolkit
 
-A modular Python framework for video point tracking, stabilization, frame averaging, and post-processing.
+A modular Python framework for video point tracking, stabilization, frame averaging, and post-processing with a web-based visual node editor.
 
 ## Features
 
+- **Web Node Editor**: Visual graph-based workflow editor with real-time execution
+- **Streaming Pipeline**: Memory-efficient frame-by-frame processing (O(1) memory)
 - **Point Tracking**: Lucas-Kanade optical flow tracking with automatic feature replenishment
-- **Blender Integration**: Export tracking data from Blender's movie clip editor
+- **Blender Integration**: Import tracking data from Blender's movie clip editor (.crv files)
 - **Stabilization**: Transform-based video stabilization (translation, rotation, scale, perspective)
 - **Frame Averaging**: Temporal frame stacking with alpha compositing
-- **Post-Processing**: Image manipulation using OpenImageIO
-- **Batch Processing**: JSON-configured job management
+- **Linear Compositing**: Gamma-correct compositing in linear color space
+- **Hardware Acceleration**: VideoToolbox (macOS), NVENC (NVIDIA), VAAPI (Linux)
+
+## Quick Start
+
+### Web Node Editor
+
+The easiest way to use VDG is through the web-based node editor:
+
+```bash
+# Start the node editor
+python -m vdg.nodes.web_editor
+
+# Open in browser
+# http://localhost:8000
+```
+
+### Example Workflows
+
+Load pre-built workflows from the `workflows/` directory:
+
+- `frame_average_simple.json` - Basic frame averaging
+- `frame_average_with_clahe.json` - Frame average with contrast enhancement
+- `two_track_stabilize.json` - Two-point stabilization with frame averaging
+- `stabilize_linear_composite.json` - Linear color space compositing
+
+## Node Editor
+
+### Available Nodes
+
+#### Input Nodes
+| Node | Description | Outputs |
+|------|-------------|---------|
+| **Video Input** | Load video file | `video`, `props` |
+| **Track Input** | Load .crv track file | `track_data` |
+| **ROI** | Define region of interest | `roi` |
+
+#### Tracking Nodes
+| Node | Description | Inputs | Outputs |
+|------|-------------|--------|---------|
+| **Feature Tracker** | Track points in video | `video`, `roi` | `points`, `track_data` |
+| **Stabilizer** | Compute transforms from tracks | `track1`, `track2`, `props` | `transforms` |
+
+#### Processing Nodes
+| Node | Description | Inputs | Outputs |
+|------|-------------|--------|---------|
+| **Apply Transform** | Apply stabilization | `video_in`, `transforms` | `video_out`, `mask` |
+| **Frame Average** | Accumulate frames | `video`, `mask` | `image`, `alpha` |
+| **Gamma** | Linear/sRGB conversion | `video_in`/`image_in`, `mask_in` | `video_out`/`image_out`, `mask_out` |
+| **CLAHE** | Adaptive contrast | `image` | `image` |
+
+#### Output Nodes
+| Node | Description | Inputs |
+|------|-------------|--------|
+| **Image Output** | Save image (PNG/TIFF) | `image` |
+| **Video Output** | Save video | `video`, `props` |
+| **Track Output** | Save .crv track file | `track_data`, `props` |
+
+### Node Parameters
+
+#### Stabilizer
+- `mode`: `single` (translation), `two_point` (translation+rotation+scale), `vstab`, `perspective`
+- `ref_frame`: Reference frame (-1 = first frame with track data)
+- `swap_xy`: Swap X/Y coordinates
+- `x_flip`: Flip X coordinate
+- `y_flip`: Flip Y coordinate
+
+#### Apply Transform
+- `x_pad`, `y_pad`: Canvas padding (pixels)
+- `x_offset`, `y_offset`: Position offset (pixels)
+
+#### Frame Average
+- `comp_mode`: `on_black`, `on_white`, `unpremult`
+- `brightness`: Output brightness multiplier
+
+#### Gamma
+- `mode`: `to_linear` (sRGB→linear) or `to_srgb` (linear→sRGB)
+- `gamma`: Gamma value (default 2.2)
+
+### Streaming Pipeline
+
+The node editor uses a memory-efficient streaming architecture:
+
+```
+Streaming Chain (O(1) memory):
+video_input → gamma → apply_transform → frame_average → image_output
+     ↓
+  1 frame at a time, never stores all frames in RAM
+```
+
+**Streamable nodes**: `video_input`, `feature_tracker`, `apply_transform`, `frame_average`, `gamma`, `clahe`, `video_output`, `image_output`
+
+**Non-streamable nodes** (need all data first): `stabilizer`, `gaussian_filter`
+
+### Linear Compositing Workflow
+
+For physically accurate compositing, work in linear color space:
+
+```
+video_input → gamma(to_linear) → apply_transform → frame_average → gamma(to_srgb) → image_output
+```
+
+The gamma node:
+- Converts sRGB video to linear light before compositing
+- Converts back to sRGB for display/output
+- Passes mask unchanged (already linear)
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/vdg.git
+git clone https://github.com/thomashollier/vdg.git
 cd vdg
 
 # Install in development mode
@@ -29,75 +135,46 @@ pip install -r requirements.txt
 
 ```
 vdg/
-├── README.md
-├── pyproject.toml
-├── requirements.txt
-├── setup.py
-│
-├── vdg/                          # Main package
-│   ├── __init__.py               # Package exports
-│   ├── __main__.py               # CLI entry point
-│   │
+├── vdg/
 │   ├── core/                     # Core abstractions
-│   │   ├── __init__.py
 │   │   ├── base.py               # Base classes and protocols
 │   │   ├── video.py              # Video I/O utilities
+│   │   ├── hardware.py           # Hardware acceleration config
 │   │   └── config.py             # Configuration management
 │   │
 │   ├── tracking/                 # Point tracking module
-│   │   ├── __init__.py
 │   │   ├── tracker.py            # FeatureTracker class
 │   │   ├── stabilizer.py         # Stabilization transforms
-│   │   └── blender_export.py     # Blender tracker export
+│   │   └── track_io.py           # .crv file I/O
 │   │
 │   ├── processing/               # Video/image processing
-│   │   ├── __init__.py
 │   │   ├── frame_average.py      # Frame averaging/stacking
-│   │   ├── color.py              # Color correction utilities
-│   │   └── transforms.py         # Image transforms
+│   │   └── color.py              # Color correction utilities
 │   │
-│   ├── postprocess/              # Post-processing operations
-│   │   ├── __init__.py
-│   │   ├── composite.py          # Alpha compositing
-│   │   ├── trim.py               # Image trimming/scaling
-│   │   └── filters.py            # Image filters
+│   ├── nodes/                    # Web node editor
+│   │   └── web_editor.py         # FastAPI server + graph executor
 │   │
-│   ├── outputs/                  # Output handlers
-│   │   ├── __init__.py
-│   │   ├── base.py               # BaseOutput abstract class
-│   │   ├── video.py              # Video output handlers
-│   │   ├── data.py               # Data output (CSV, CRV)
-│   │   └── manager.py            # OutputManager
-│   │
-│   ├── pipeline/                 # Batch processing
-│   │   ├── __init__.py
-│   │   ├── runner.py             # Job runner
-│   │   └── config_gen.py         # Config file generation
-│   │
-│   └── utils/                    # Shared utilities
-│       ├── __init__.py
-│       ├── metadata.py           # Metadata handling (exiftool)
-│       ├── ffmpeg.py             # FFmpeg wrapper
-│       └── math.py               # Math utilities
+│   └── outputs/                  # Output handlers
+│       ├── base.py               # BaseOutput abstract class
+│       └── manager.py            # OutputManager
 │
-├── scripts/                      # Standalone CLI scripts
-│   ├── vdg-track                 # Point tracking
-│   ├── vdg-stabilize             # Stabilization
-│   ├── vdg-frameavg              # Frame averaging
-│   └── vdg-process               # Batch processing
+├── workflows/                    # Example workflow files
+│   ├── frame_average_simple.json
+│   ├── two_track_stabilize.json
+│   └── stabilize_linear_composite.json
+│
+├── examples/                     # Example scripts
+│   └── track_and_stabilize.py
 │
 └── tests/                        # Unit tests
-    ├── __init__.py
-    ├── test_tracking.py
-    ├── test_stabilization.py
-    └── test_outputs.py
 ```
 
-## Quick Start
-
-### Command Line Usage
+## Command Line Usage
 
 ```bash
+# Start node editor
+python -m vdg.nodes.web_editor
+
 # Track points in a video
 vdg track input.mp4 -out previewtrack -out trackers=type=2
 
@@ -111,12 +188,12 @@ vdg frameavg input.mp4 -fs 100 -fe 500 -wa
 vdg process -c process_config.json
 ```
 
-### Python API
+## Python API
+
+### Feature Tracking
 
 ```python
 from vdg.tracking import FeatureTracker
-from vdg.processing import FrameAverager
-from vdg.outputs import OutputManager
 
 # Create a tracker
 tracker = FeatureTracker(num_features=50)
@@ -129,40 +206,43 @@ for frame in video_frames:
     points, ids, stats = tracker.update(frame)
 ```
 
-## Module Details
+### Frame Averaging
 
-### Tracking (`vdg.tracking`)
+```python
+from vdg.processing import FrameAverager, CompMode
 
-The tracking module provides feature point detection and tracking:
+averager = FrameAverager(comp_mode=CompMode.ON_BLACK)
 
-- `FeatureTracker`: Lucas-Kanade optical flow with forward-backward validation
-- `Stabilizer`: Compute stabilization transforms from tracking data
-- `BlenderExporter`: Export tracking data from Blender projects
+for frame in video_frames:
+    averager.add_frame(frame)
 
-### Processing (`vdg.processing`)
+result = averager.finalize()
+```
 
-Video and image processing operations:
+### Track File I/O
 
-- `FrameAverager`: Temporal frame averaging with alpha masking
-- `ColorCorrector`: Gamma, exposure, CLAHE adjustments
-- `TransformEngine`: Affine and perspective transforms
+```python
+from vdg.tracking.track_io import read_crv_file, write_crv_file
 
-### Outputs (`vdg.outputs`)
+# Read track data
+track_data = read_crv_file("track01.crv")
+# Returns: {frame_num: (x, y), ...} with normalized coordinates
 
-Extensible output system:
+# Write track data
+write_crv_file("output.crv", track_data)
+```
 
-- `PreviewTrackOutput`: Video with tracking overlay
-- `CSVOutput`: Tracking data as CSV
-- `TrackersOutput`: Normalized coordinates (.crv format)
-- `CleanVideoOutput`: Stabilized video without overlays
+## .crv Track File Format
 
-### Post-processing (`vdg.postprocess`)
+The .crv format stores normalized (0-1) tracking coordinates:
 
-Image post-processing using OpenImageIO:
+```
+1550 [[ 0.4521, 0.3892 ]]
+1551 [[ 0.4523, 0.3895 ]]
+1552 [[ 0.4519, 0.3891 ]]
+```
 
-- `Compositor`: Alpha channel manipulation and compositing
-- `Trimmer`: Auto-trim and scale images
-- `Filters`: Sigmoid contrast, blur, power adjustments
+Compatible with Blender's movie clip editor export.
 
 ## Configuration
 
@@ -191,53 +271,31 @@ Image post-processing using OpenImageIO:
 }
 ```
 
-## Extending the Framework
-
-### Adding a New Output Type
-
-```python
-from vdg.outputs.base import BaseOutput, OutputSpec
-
-class MyCustomOutput(BaseOutput):
-    def _get_default_suffix(self) -> str:
-        return "_custom"
-    
-    def _get_default_extension(self) -> str:
-        return "json"
-    
-    def initialize(self, video_props: dict) -> None:
-        self.data = []
-    
-    def process_frame(self, frame_num: int, frame, tracking_data: dict) -> None:
-        self.data.append({"frame": frame_num, ...})
-    
-    def finalize(self) -> None:
-        with open(self.output_path, 'w') as f:
-            json.dump(self.data, f)
-
-# Register the output type
-from vdg.outputs import register_output_type
-register_output_type('custom', MyCustomOutput)
-```
-
-### Adding a New Processing Filter
-
-```python
-from vdg.processing.base import BaseFilter
-
-class MyFilter(BaseFilter):
-    def apply(self, frame: np.ndarray) -> np.ndarray:
-        # Your processing logic
-        return processed_frame
-```
-
 ## Dependencies
 
 - Python 3.10+
 - OpenCV (cv2)
 - NumPy
 - SciPy (for Gaussian filtering)
+- FastAPI + Uvicorn (for node editor)
 - OpenImageIO (optional, for post-processing)
+
+## Hardware Acceleration
+
+VDG supports hardware-accelerated video encoding/decoding:
+
+```python
+from vdg.core.hardware import HardwareConfig
+
+# Auto-detect available backends
+config = HardwareConfig.auto_detect()
+print(f"Using: {config.backend}")  # e.g., "videotoolbox"
+```
+
+Supported backends:
+- **VideoToolbox** (macOS)
+- **NVENC/NVDEC** (NVIDIA GPUs)
+- **VAAPI** (Linux)
 
 ## License
 
