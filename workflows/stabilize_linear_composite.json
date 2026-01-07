@@ -1,0 +1,182 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "video_input",
+      "x": 100,
+      "y": 250,
+      "params": {
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/12102024150054560.mov",
+        "first_frame": 1,
+        "last_frame": -1
+      }
+    },
+    {
+      "id": "n2",
+      "type": "track_input",
+      "x": 100,
+      "y": 80,
+      "params": {
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/12102024150054560_track01.crv"
+      }
+    },
+    {
+      "id": "n3",
+      "type": "track_input",
+      "x": 100,
+      "y": 160,
+      "params": {
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/12102024150054560_track02.crv"
+      }
+    },
+    {
+      "id": "n4",
+      "type": "stabilizer",
+      "x": 350,
+      "y": 120,
+      "params": {
+        "mode": "two_point",
+        "ref_frame": -1,
+        "swap_xy": false,
+        "x_flip": false,
+        "y_flip": false
+      }
+    },
+    {
+      "id": "n5",
+      "type": "gamma",
+      "x": 350,
+      "y": 250,
+      "params": {
+        "mode": "to_linear",
+        "gamma": 2.2
+      }
+    },
+    {
+      "id": "n6",
+      "type": "apply_transform",
+      "x": 600,
+      "y": 250,
+      "params": {
+        "x_pad": 100,
+        "y_pad": 100,
+        "x_offset": 0,
+        "y_offset": 0
+      }
+    },
+    {
+      "id": "n7",
+      "type": "frame_average",
+      "x": 850,
+      "y": 250,
+      "params": {
+        "comp_mode": "on_black",
+        "brightness": 1
+      }
+    },
+    {
+      "id": "n8",
+      "type": "gamma",
+      "x": 1100,
+      "y": 250,
+      "params": {
+        "mode": "to_srgb",
+        "gamma": 2.2
+      }
+    },
+    {
+      "id": "n9",
+      "type": "image_output",
+      "x": 1331,
+      "y": 242,
+      "params": {
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/12102024150054560_trk0102.png",
+        "bit_depth": "16"
+      }
+    },
+    {
+      "id": "n10",
+      "type": "image_output",
+      "x": 1335,
+      "y": 334,
+      "params": {
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/12102024150054560_trk0102_mtt.png",
+        "bit_depth": "16"
+      }
+    }
+  ],
+  "conns": [
+    {
+      "sn": "n2",
+      "sp": "track_data",
+      "tn": "n4",
+      "tp": "track1"
+    },
+    {
+      "sn": "n3",
+      "sp": "track_data",
+      "tn": "n4",
+      "tp": "track2"
+    },
+    {
+      "sn": "n1",
+      "sp": "props",
+      "tn": "n4",
+      "tp": "props"
+    },
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n5",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n5",
+      "sp": "video_out",
+      "tn": "n6",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n4",
+      "sp": "transforms",
+      "tn": "n6",
+      "tp": "transforms"
+    },
+    {
+      "sn": "n6",
+      "sp": "video_out",
+      "tn": "n7",
+      "tp": "video"
+    },
+    {
+      "sn": "n6",
+      "sp": "mask",
+      "tn": "n7",
+      "tp": "mask"
+    },
+    {
+      "sn": "n7",
+      "sp": "image",
+      "tn": "n8",
+      "tp": "image_in"
+    },
+    {
+      "sn": "n8",
+      "sp": "image_out",
+      "tn": "n9",
+      "tp": "image"
+    },
+    {
+      "sn": "n7",
+      "sp": "alpha",
+      "tn": "n8",
+      "tp": "mask_in"
+    },
+    {
+      "sn": "n8",
+      "sp": "mask_out",
+      "tn": "n10",
+      "tp": "image"
+    }
+  ]
+}

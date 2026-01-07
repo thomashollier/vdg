@@ -108,14 +108,15 @@ NODE_DEFINITIONS = [
             NodeParam("mode", "choice", "two_point", choices=["single", "two_point", "vstab", "perspective"]),
             NodeParam("ref_frame", "int", -1),
             NodeParam("swap_xy", "bool", False),
+            NodeParam("x_flip", "bool", False),
             NodeParam("y_flip", "bool", False),
         ],
         color="#2196F3",
     ),
     NodeDefinition(
         id="apply_transform", title="Apply Transform", category="Processing",
-        inputs=[NodePort("video", "video"), NodePort("transforms", "transforms")],
-        outputs=[NodePort("video", "video"), NodePort("mask", "video")],
+        inputs=[NodePort("video_in", "video"), NodePort("transforms", "transforms")],
+        outputs=[NodePort("video_out", "video"), NodePort("mask", "video")],
         params=[
             NodeParam("x_pad", "int", 0), NodeParam("y_pad", "int", 0),
             NodeParam("x_offset", "int", 0), NodeParam("y_offset", "int", 0),
@@ -128,7 +129,6 @@ NODE_DEFINITIONS = [
         outputs=[NodePort("image", "image"), NodePort("alpha", "image")],
         params=[
             NodeParam("comp_mode", "choice", "on_black", choices=["on_black", "on_white", "unpremult"]),
-            NodeParam("gamma", "float", 1.0, min=0.1, max=4.0),
             NodeParam("brightness", "float", 1.0, min=0.0, max=4.0),
         ],
         color="#FF9800",
@@ -140,6 +140,24 @@ NODE_DEFINITIONS = [
         params=[
             NodeParam("clip_limit", "float", 40.0, min=1.0, max=100.0),
             NodeParam("grid_size", "int", 8, min=2, max=32),
+        ],
+        color="#FF9800",
+    ),
+    NodeDefinition(
+        id="gamma", title="Gamma", category="Processing",
+        inputs=[
+            NodePort("video_in", "video", optional=True),
+            NodePort("image_in", "image", optional=True),
+            NodePort("mask_in", "video", optional=True),
+        ],
+        outputs=[
+            NodePort("video_out", "video"),
+            NodePort("image_out", "image"),
+            NodePort("mask_out", "video"),
+        ],
+        params=[
+            NodeParam("mode", "choice", "to_linear", choices=["to_linear", "to_srgb"]),
+            NodeParam("gamma", "float", 2.2, min=1.0, max=3.0),
         ],
         color="#FF9800",
     ),
@@ -487,31 +505,535 @@ async def get_nodes():
 @app.post("/api/execute")
 async def execute_graph(graph: dict):
     """Execute the node graph."""
+    print("\n" + "=" * 50)
+    print("EXECUTING GRAPH")
+    print("=" * 50)
     try:
         executor = GraphExecutor()
         result = executor.execute(graph)
+        if result['success']:
+            print("\n✓ Execution completed successfully")
+        else:
+            print("\n✗ Execution failed")
+        print("=" * 50 + "\n")
         return result
     except Exception as e:
         import traceback
+        print(f"\n✗ Execution error: {e}")
+        print("=" * 50 + "\n")
         return {'success': False, 'message': str(e), 'errors': [{'node_id': 'graph', 'error': traceback.format_exc()}]}
 
 
 class GraphExecutor:
-    """Executes a VDG node graph."""
-    
+    """Executes a VDG node graph with streaming optimization."""
+
+    # Nodes that can process frames in a streaming fashion
+    STREAMABLE_NODES = {
+        'video_input',      # Yields frames
+        'feature_tracker',  # Processes frame-by-frame
+        'apply_transform',  # Applies pre-computed transform per frame
+        'frame_average',    # Accumulates without storing frames
+        'clahe',            # Single-frame operation
+        'gamma',            # Single-frame gamma correction
+        'video_output',     # Writes frames as they come
+        'image_output',     # Final output (end of stream)
+    }
+
+    # Nodes that CANNOT stream - they need all data before producing output
+    NON_STREAMABLE_NODES = {
+        'stabilizer',       # Needs all track data to compute transforms
+        'gaussian_filter',  # Needs neighboring frames for smoothing
+    }
+
+    # Nodes that are just data/config (no video processing)
+    DATA_NODES = {
+        'roi',
+        'track_input',
+        'track_output',
+    }
+
     def __init__(self):
         self.outputs = {}  # node_id -> {port_name: value}
         self.log = []
-    
+
+    def _log(self, message: str):
+        """Add message to log and print to terminal."""
+        self.log.append(message)
+        print(message)
+
+    def _get_node_type(self, node: dict) -> str:
+        return node.get('type', '')
+
+    def _find_streaming_chains(self, nodes: dict, edges: list) -> list:
+        """
+        Find chains of nodes that can be executed in streaming mode.
+
+        Returns list of chains, where each chain is a list of node IDs
+        that can stream frames through together.
+        """
+        # Build adjacency info
+        outgoing = {nid: [] for nid in nodes}  # node -> [(target_node, src_port, tgt_port)]
+        incoming = {nid: [] for nid in nodes}  # node -> [(source_node, src_port, tgt_port)]
+
+        for e in edges:
+            src, tgt = e['source'], e['target']
+            outgoing[src].append((tgt, e['sourceHandle'], e['targetHandle']))
+            incoming[tgt].append((src, e['sourceHandle'], e['targetHandle']))
+
+        # Find video streaming chains
+        # A chain starts at video_input and continues through streamable nodes
+        # until hitting a non-streamable node or end
+        chains = []
+
+        for nid, node in nodes.items():
+            ntype = self._get_node_type(node)
+
+            # Start chain at video_input
+            if ntype == 'video_input':
+                chain = [nid]
+                current = nid
+
+                while True:
+                    # Find video output connections
+                    video_outs = [
+                        (tgt, sp, tp) for tgt, sp, tp in outgoing[current]
+                        if sp in ('video', 'video_out') and tp in ('video', 'video_in')
+                    ]
+
+                    if len(video_outs) != 1:
+                        # Branching or end of chain
+                        break
+
+                    next_node, _, _ = video_outs[0]
+                    next_type = self._get_node_type(nodes[next_node])
+
+                    if next_type in self.NON_STREAMABLE_NODES:
+                        # Hit a barrier - stop chain here
+                        break
+
+                    if next_type in self.STREAMABLE_NODES:
+                        chain.append(next_node)
+                        current = next_node
+                    else:
+                        break
+
+                if len(chain) > 1:
+                    chains.append(chain)
+
+        return chains
+
+    def _execute_streaming_chain(self, chain: list, nodes: dict, edges: list, errors: list) -> None:
+        """Execute a chain of nodes in streaming mode (frame by frame)."""
+        from vdg.core.video import VideoReader
+        import numpy as np
+
+        if not chain:
+            return
+
+        self._log(f"\n>>> STREAMING PIPELINE: {' → '.join(self._get_node_type(nodes[nid]) for nid in chain)}")
+
+        # Get video source info
+        source_node = nodes[chain[0]]
+        source_params = source_node.get('data', {}).get('params', {}) or source_node.get('params', {})
+        filepath = source_params.get('filepath', '').strip()
+        first_frame = source_params.get('first_frame', 1)
+        last_frame = source_params.get('last_frame', -1)
+        last_frame = None if last_frame == -1 else last_frame
+
+        if not filepath:
+            errors.append({'node_id': chain[0], 'type': 'video_input', 'error': 'No filepath specified'})
+            return
+
+        from pathlib import Path
+        if not Path(filepath).exists():
+            errors.append({'node_id': chain[0], 'type': 'video_input', 'error': f'File not found: {filepath}'})
+            return
+
+        from vdg.core.video import get_video_properties
+        props = get_video_properties(filepath)
+        self._log(f"  Source: {filepath}")
+        self._log(f"  Video: {props.width}x{props.height}, {props.fps:.2f}fps")
+
+        # Store video reference for non-streaming nodes that might need it
+        self.outputs[chain[0]] = {
+            'video': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
+            'props': props
+        }
+
+        # Prepare streaming state for each node in chain
+        chain_state = {}
+        transform_frames = None  # Track frame range from transforms if present
+
+        for nid in chain[1:]:  # Skip video_input
+            node = nodes[nid]
+            ntype = self._get_node_type(node)
+            params = node.get('data', {}).get('params', {}) or node.get('params', {})
+
+            # Gather non-video inputs (transforms, ROI, etc.)
+            non_video_inputs = {}
+            for e in edges:
+                if e['target'] == nid and e['targetHandle'] not in ('video', 'video_in'):
+                    src_out = self.outputs.get(e['source'], {})
+                    non_video_inputs[e['targetHandle']] = src_out.get(e['sourceHandle'])
+
+            # If this is apply_transform, extract frame range from transforms
+            if ntype == 'apply_transform':
+                transform_data = non_video_inputs.get('transforms', {})
+                if transform_data and 'frames' in transform_data:
+                    transform_frames = transform_data['frames']
+                    self._log(f"  Transform data covers frames {transform_frames[0]}-{transform_frames[-1]} ({len(transform_frames)} frames)")
+
+            chain_state[nid] = {
+                'type': ntype,
+                'params': params,
+                'inputs': non_video_inputs,
+                'accumulator': None,
+                'alpha_accumulator': None,
+                'frame_count': 0,
+                'tracker': None,
+                'track_data': {},
+            }
+
+        # Determine frame range - use transform frames if available
+        if transform_frames:
+            # Override video range with transform range
+            first_frame = transform_frames[0]
+            last_frame = transform_frames[-1]
+            self._log(f"  Limiting to transform frame range: {first_frame}-{last_frame}")
+
+        # Stream frames through the chain
+        frame_count = 0
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=False) as reader:
+            total_frames = reader.frame_count
+            self._log(f"  Streaming {total_frames} frames...")
+
+            for frame_num, frame in reader:
+                current_frame = frame
+                current_data = {'frame_num': frame_num, 'props': props}
+
+                # Process through each node in chain
+                for nid in chain[1:]:
+                    state = chain_state[nid]
+                    ntype = state['type']
+                    params = state['params']
+                    inputs = state['inputs']
+
+                    try:
+                        if ntype == 'feature_tracker':
+                            current_frame, current_data = self._stream_feature_tracker(
+                                current_frame, current_data, state, params, inputs
+                            )
+                        elif ntype == 'apply_transform':
+                            current_frame, current_data = self._stream_apply_transform(
+                                current_frame, current_data, state, params, inputs
+                            )
+                        elif ntype == 'frame_average':
+                            current_frame, current_data = self._stream_frame_average(
+                                current_frame, current_data, state, params, inputs
+                            )
+                        elif ntype == 'video_output':
+                            self._stream_video_output(
+                                current_frame, current_data, state, params, frame_count == 0
+                            )
+                        elif ntype == 'clahe':
+                            current_frame, current_data = self._stream_clahe(
+                                current_frame, current_data, state, params
+                            )
+                        elif ntype == 'gamma':
+                            current_frame, current_data = self._stream_gamma(
+                                current_frame, current_data, state, params, inputs
+                            )
+                    except Exception as ex:
+                        errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
+                        self._log(f"  ✗ Error in {ntype}: {ex}")
+                        return
+
+                frame_count += 1
+                if frame_count % 100 == 0:
+                    self._log(f"  Processed {frame_count}/{total_frames} frames...")
+
+        self._log(f"  Streamed {frame_count} frames")
+
+        # Finalize each node and store outputs
+        for nid in chain[1:]:
+            state = chain_state[nid]
+            ntype = state['type']
+            params = state['params']
+
+            try:
+                if ntype == 'feature_tracker':
+                    self.outputs[nid] = {
+                        'track_data': state['track_data'],
+                        'points': state.get('last_points'),
+                    }
+                    self._log(f"  ✓ feature_tracker: {len(state['track_data'])} tracked frames")
+
+                elif ntype == 'frame_average':
+                    result, alpha = self._finalize_frame_average(state, params)
+                    self.outputs[nid] = {'image': result, 'alpha': alpha}
+                    self._log(f"  ✓ frame_average: {result.shape[1]}x{result.shape[0]} output")
+
+                elif ntype == 'video_output':
+                    self._finalize_video_output(state)
+                    self._log(f"  ✓ video_output: {state.get('filepath')}")
+
+                elif ntype == 'apply_transform':
+                    # No persistent output needed - frames already passed through
+                    self.outputs[nid] = {'video_out': None, 'mask': None}
+                    self._log(f"  ✓ apply_transform complete")
+
+                elif ntype == 'clahe':
+                    self.outputs[nid] = {}
+                    self._log(f"  ✓ clahe complete")
+
+                elif ntype == 'gamma':
+                    self.outputs[nid] = {'video_out': None, 'mask_out': None}
+                    self._log(f"  ✓ gamma complete")
+
+            except Exception as ex:
+                errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
+                self._log(f"  ✗ Error finalizing {ntype}: {ex}")
+
+    def _stream_feature_tracker(self, frame, data, state, params, inputs):
+        """Process one frame through feature tracker."""
+        from vdg.tracking import FeatureTracker
+
+        if state['tracker'] is None:
+            roi = inputs.get('roi')
+            state['tracker'] = FeatureTracker(
+                num_features=params.get('num_features', 30),
+                initial_roi=roi,
+                enforce_bbox=params.get('enforce_bbox', True),
+            )
+            state['tracker'].initialize(frame)
+        else:
+            state['tracker'].update(frame)
+
+        tracker = state['tracker']
+        if tracker.points is not None and len(tracker.points) > 0:
+            pts = tracker.points.reshape(-1, 2)
+            cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+            state['track_data'][data['frame_num']] = {'x': float(cx), 'y': float(cy)}
+
+        state['last_points'] = tracker.points
+        state['frame_count'] += 1
+        return frame, data
+
+    def _stream_apply_transform(self, frame, data, state, params, inputs):
+        """Apply transform to one frame."""
+        import cv2
+        import numpy as np
+        import math
+
+        transforms = inputs.get('transforms', {}).get('transforms', {})
+        frame_num = data['frame_num']
+        t = transforms.get(frame_num)
+
+        x_pad = params.get('x_pad', 0)
+        y_pad = params.get('y_pad', 0)
+        x_off = params.get('x_offset', 0)
+        y_off = params.get('y_offset', 0)
+
+        in_h, in_w = frame.shape[:2]
+        out_w = in_w + x_pad
+        out_h = in_h + y_pad
+
+        if t is None:
+            # No transform for this frame - just center it in padded canvas
+            M = np.float32([[1, 0, x_pad / 2], [0, 1, y_pad / 2]])
+        else:
+            # Build transform matrix matching original stabilizer.py:
+            # 1. Translate tracking point to origin
+            # 2. Rotate and scale around origin
+            # 3. Translate to reference position (+ padding offset)
+            pnt_x = t.get('pnt_x', in_w / 2)
+            pnt_y = t.get('pnt_y', in_h / 2)
+            ref_x = t.get('ref_x', pnt_x)
+            ref_y = t.get('ref_y', pnt_y)
+            rotation = t.get('rotation', 0)
+            scale = t.get('scale', 1)
+
+            # M_offset: translate tracking point to origin
+            M_offset = np.float32([
+                [1, 0, -pnt_x],
+                [0, 1, -pnt_y],
+                [0, 0, 1]
+            ])
+
+            # M_rot: rotate and scale around origin
+            rot_deg = -math.degrees(rotation)
+            M_rot = cv2.getRotationMatrix2D((0, 0), rot_deg, scale)
+            M_rot = np.vstack([M_rot, [0, 0, 1]])
+
+            # M_place: translate to reference position + padding
+            M_place = np.float32([
+                [1, 0, ref_x + x_pad / 2 + x_off],
+                [0, 1, ref_y + y_pad / 2 + y_off],
+                [0, 0, 1]
+            ])
+
+            # Combine: M = M_place @ M_rot @ M_offset
+            M = np.matmul(M_rot, M_offset)
+            M = np.matmul(M_place, M)
+            M = M[:2]  # Take 2x3 for warpAffine
+
+        transformed = cv2.warpAffine(frame, M, (out_w, out_h))
+
+        # Also create mask for alpha accumulation
+        mask = np.ones((in_h, in_w), dtype=np.uint8) * 255
+        mask_warped = cv2.warpAffine(mask, M, (out_w, out_h))
+        data['mask'] = mask_warped
+
+        state['frame_count'] += 1
+        return transformed, data
+
+    def _stream_frame_average(self, frame, data, state, params, inputs):
+        """Accumulate one frame into average."""
+        import numpy as np
+
+        if state['accumulator'] is None:
+            state['accumulator'] = np.zeros(frame.shape, dtype=np.float64)
+            state['alpha_accumulator'] = np.zeros(frame.shape[:2], dtype=np.float64)
+
+        state['accumulator'] += frame.astype(np.float64)
+
+        # Use mask if provided, otherwise compute from luminance
+        if 'mask' in data and data['mask'] is not None:
+            state['alpha_accumulator'] += data['mask'].astype(np.float64) / 255.0
+        else:
+            frame_f = frame.astype(np.float32) / 255.0
+            alpha = np.power(np.clip(frame_f.mean(axis=2) * 255 / 16.0, 0, 1), 4)
+            state['alpha_accumulator'] += alpha
+
+        state['frame_count'] += 1
+        return None, data  # No frame output during streaming
+
+    def _finalize_frame_average(self, state, params):
+        """Finalize frame average and return result."""
+        import numpy as np
+
+        if state['frame_count'] == 0:
+            raise ValueError("No frames accumulated")
+
+        result = state['accumulator'] / state['frame_count']
+        alpha = state['alpha_accumulator'] / state['frame_count']
+
+        comp_mode = params.get('comp_mode', 'on_black')
+        brightness = params.get('brightness', 1.0)
+
+        result *= brightness
+
+        if comp_mode == 'on_white':
+            alpha_3ch = np.dstack([alpha, alpha, alpha])
+            white = np.ones_like(result) * 255
+            result = result * alpha_3ch + white * (1 - alpha_3ch)
+        elif comp_mode == 'unpremult':
+            alpha_3ch = np.dstack([alpha, alpha, alpha])
+            alpha_3ch = np.clip(alpha_3ch, 0.001, 1.0)
+            result = result / alpha_3ch
+
+        result = np.clip(result, 0, 255).astype(np.uint8)
+        alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
+
+        return result, alpha
+
+    def _stream_video_output(self, frame, data, state, params, is_first):
+        """Write one frame to video output."""
+        import cv2
+
+        if is_first:
+            filepath = params.get('filepath', 'output.mp4').strip()
+            h, w = frame.shape[:2]
+            fps = data['props'].fps if data.get('props') else 30
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            state['writer'] = cv2.VideoWriter(filepath, fourcc, fps, (w, h))
+            state['filepath'] = filepath
+
+        if state.get('writer'):
+            state['writer'].write(frame)
+
+        state['frame_count'] += 1
+
+    def _finalize_video_output(self, state):
+        """Close video writer."""
+        if state.get('writer'):
+            state['writer'].release()
+
+    def _stream_clahe(self, frame, data, state, params):
+        """Apply CLAHE to one frame."""
+        import cv2
+
+        clip = params.get('clip_limit', 40.0)
+        grid = params.get('grid_size', 8)
+        clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid))
+
+        channels = cv2.split(frame)
+        enhanced = [clahe.apply(ch) for ch in channels]
+        result = cv2.merge(enhanced)
+
+        state['frame_count'] += 1
+        return result, data
+
+    def _stream_gamma(self, frame, data, state, params, inputs):
+        """Apply gamma correction to one frame (not to mask)."""
+        import numpy as np
+
+        mode = params.get('mode', 'to_linear')
+        gamma = params.get('gamma', 2.2)
+
+        # Determine the gamma exponent based on mode
+        if mode == 'to_linear':
+            # sRGB to linear: raise to power of gamma
+            exponent = gamma
+        else:
+            # linear to sRGB: raise to power of 1/gamma
+            exponent = 1.0 / gamma
+
+        # Apply gamma to video frame only (not mask)
+        # Normalize to 0-1, apply gamma, scale back
+        if frame.dtype == np.uint8:
+            max_val = 255.0
+        elif frame.dtype == np.uint16:
+            max_val = 65535.0
+        else:
+            max_val = 1.0
+
+        frame_float = frame.astype(np.float32) / max_val
+        frame_corrected = np.power(frame_float, exponent)
+        frame_corrected = np.clip(frame_corrected * max_val, 0, max_val).astype(frame.dtype)
+
+        # Pass through mask unchanged (it's already linear)
+        mask = data.get('mask')
+        if mask is not None:
+            data['mask'] = mask  # unchanged
+
+        state['frame_count'] += 1
+        return frame_corrected, data
+
+    def _get_chain_dependencies(self, chain: list, nodes: dict, edges: list) -> set:
+        """Get all non-video dependencies for a streaming chain."""
+        chain_set = set(chain)
+        dependencies = set()
+
+        for nid in chain:
+            for e in edges:
+                if e['target'] == nid:
+                    src = e['source']
+                    # Skip dependencies within the chain (video connections)
+                    if src not in chain_set:
+                        dependencies.add(src)
+
+        return dependencies
+
     def execute(self, graph: dict) -> dict:
         nodes = {n['id']: n for n in graph.get('nodes', [])}
         edges = graph.get('edges', [])
-        
+
         # Build dependency graph
         deps = {nid: set() for nid in nodes}
         for e in edges:
             deps[e['target']].add(e['source'])
-        
+
         # Topological sort
         order = []
         visited = set()
@@ -524,37 +1046,118 @@ class GraphExecutor:
             order.append(nid)
         for nid in nodes:
             visit(nid)
-        
-        # Execute in order
+
+        # Find streaming chains
+        streaming_chains = self._find_streaming_chains(nodes, edges)
+        streaming_nodes = set()
+        for chain in streaming_chains:
+            streaming_nodes.update(chain)
+
+        # Calculate dependencies for each chain
+        chain_deps = {}
+        for chain in streaming_chains:
+            chain_deps[chain[0]] = self._get_chain_dependencies(chain, nodes, edges)
+
+        self._log(f"Found {len(streaming_chains)} streaming chain(s)")
+
+        # Pre-populate video_input outputs with props (needed by stabilizer etc. before streaming runs)
+        from vdg.core.video import get_video_properties
+        from pathlib import Path
+        for chain in streaming_chains:
+            source_node = nodes[chain[0]]
+            source_type = self._get_node_type(source_node)
+            if source_type == 'video_input':
+                params = source_node.get('data', {}).get('params', {}) or source_node.get('params', {})
+                filepath = params.get('filepath', '').strip()
+                if filepath and Path(filepath).exists():
+                    props = get_video_properties(filepath)
+                    first_frame = params.get('first_frame', 1)
+                    last_frame = params.get('last_frame', -1)
+                    last_frame = None if last_frame == -1 else last_frame
+                    self.outputs[chain[0]] = {
+                        'video': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
+                        'props': props
+                    }
+                    self._log(f"  Pre-loaded props for {chain[0]}: {props.width}x{props.height}")
+
         errors = []
+
+        # Execute in order, using streaming for chains
+        executed = set()
+        pending_chains = {c[0]: c for c in streaming_chains}  # chains waiting to execute
+
         for nid in order:
+            if nid in executed:
+                continue
+
             node = nodes[nid]
-            ntype = node['type']
-            params = node.get('data', {}).get('params', {}) or node.get('params', {})
-            
-            # Gather inputs
-            inputs = {}
-            for e in edges:
-                if e['target'] == nid:
-                    src_out = self.outputs.get(e['source'], {})
-                    inputs[e['targetHandle']] = src_out.get(e['sourceHandle'])
-            
-            # Execute node
-            try:
-                handler = NODE_HANDLERS.get(ntype)
-                if handler:
-                    self.log.append(f"Executing {ntype} ({nid})...")
-                    result = handler(inputs, params, self.log)
-                    self.outputs[nid] = result or {}
-                    self.log.append(f"  ✓ {ntype} complete")
+            ntype = self._get_node_type(node)
+
+            # Check if this node starts a streaming chain
+            chain = pending_chains.get(nid)
+
+            if chain:
+                # Check if all dependencies are satisfied
+                deps_satisfied = all(dep in executed for dep in chain_deps.get(nid, set()))
+
+                if deps_satisfied:
+                    # Execute entire chain in streaming mode
+                    self._execute_streaming_chain(chain, nodes, edges, errors)
+                    executed.update(chain)
+                    del pending_chains[nid]
                 else:
-                    self.log.append(f"  ⚠ No handler for {ntype}")
-                    self.outputs[nid] = {}
-            except Exception as ex:
-                import traceback
-                errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
-                self.log.append(f"  ✗ Error in {ntype}: {ex}")
-        
+                    # Skip for now, will be executed later
+                    continue
+            elif nid in streaming_nodes:
+                # Part of a chain but not the start - skip, will be handled by chain
+                continue
+            else:
+                # Execute node normally
+                params = node.get('data', {}).get('params', {}) or node.get('params', {})
+
+                # Gather inputs
+                inputs = {}
+                for e in edges:
+                    if e['target'] == nid:
+                        src_out = self.outputs.get(e['source'], {})
+                        inputs[e['targetHandle']] = src_out.get(e['sourceHandle'])
+
+                # Execute node
+                try:
+                    handler = NODE_HANDLERS.get(ntype)
+                    if handler:
+                        self._log(f"Executing {ntype} ({nid})...")
+                        result = handler(inputs, params, self)
+                        self.outputs[nid] = result or {}
+                        self._log(f"  ✓ {ntype} complete")
+                    else:
+                        self._log(f"  ⚠ No handler for {ntype}")
+                        self.outputs[nid] = {}
+                except Exception as ex:
+                    import traceback
+                    errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
+                    self._log(f"  ✗ Error in {ntype}: {ex}")
+
+                executed.add(nid)
+
+            # After each node, check if any pending chains can now execute
+            for chain_start in list(pending_chains.keys()):
+                if chain_start in executed:
+                    continue
+                chain = pending_chains[chain_start]
+                deps_satisfied = all(dep in executed for dep in chain_deps.get(chain_start, set()))
+                if deps_satisfied:
+                    self._execute_streaming_chain(chain, nodes, edges, errors)
+                    executed.update(chain)
+                    del pending_chains[chain_start]
+
+        # Execute any remaining pending chains (shouldn't happen if deps are correct)
+        for chain_start, chain in list(pending_chains.items()):
+            if chain_start not in executed:
+                self._log(f"  ⚠ Executing deferred chain starting at {chain_start}")
+                self._execute_streaming_chain(chain, nodes, edges, errors)
+                executed.update(chain)
+
         return {
             'success': len(errors) == 0,
             'message': '\n'.join(self.log),
@@ -566,318 +1169,543 @@ class GraphExecutor:
 # NODE HANDLERS - Actual execution logic
 # =============================================================================
 
-def handle_video_input(inputs: dict, params: dict, log: list) -> dict:
-    """Load video and return frames + properties."""
-    from vdg.core.video import VideoReader
-    import numpy as np
-    
-    filepath = params.get('filepath', '')
+def handle_video_input(inputs: dict, params: dict, executor) -> dict:
+    """Load video and return video reference (not all frames in memory)."""
+    from vdg.core.video import VideoReader, get_video_properties
+    from pathlib import Path
+
+    filepath = params.get('filepath', '').strip()
     if not filepath:
         raise ValueError("No video file specified")
-    
+
+    # Check if file exists
+    if not Path(filepath).exists():
+        raise ValueError(f"Video file not found: {filepath}")
+
     first = params.get('first_frame', 1)
     last = params.get('last_frame', -1)
     last = None if last == -1 else last
-    
-    log.append(f"  Opening {filepath} (frames {first}-{last or 'end'})")
-    reader = VideoReader(filepath, first, last)
-    reader.open()
-    
-    props = reader.properties
-    log.append(f"  Video: {props.width}x{props.height}, {props.fps}fps")
-    
-    # Load all frames into memory so multiple nodes can use them
-    frames = []
-    frame_nums = []
-    for frame_num, frame in reader:
-        frames.append(frame.copy())
-        frame_nums.append(frame_num)
-        if len(frames) % 100 == 0:
-            log.append(f"  Loaded {len(frames)} frames...")
-    
-    reader.close()
-    log.append(f"  Loaded {len(frames)} frames total")
-    
+
+    executor._log(f"  Video: {filepath}")
+    executor._log(f"  Frame range: {first} - {last or 'end'}")
+
+    props = get_video_properties(filepath)
+    executor._log(f"  Properties: {props.width}x{props.height}, {props.fps:.2f}fps, {props.frame_count} frames")
+
+    # Return video reference - frames will be loaded on-demand by nodes that need them
     return {
-        'video': {'frames': frames, 'frame_nums': frame_nums, 'props': props, 'filepath': filepath},
+        'video': {
+            'filepath': filepath,
+            'first_frame': first,
+            'last_frame': last,
+            'props': props,
+            'frames': None,  # Frames loaded on-demand, not upfront
+        },
         'props': props
     }
 
 
-def handle_roi(inputs: dict, params: dict, log: list) -> dict:
+def handle_roi(inputs: dict, params: dict, executor) -> dict:
     """Return ROI tuple."""
-    roi = (params.get('x', 0), params.get('y', 0), 
+    roi = (params.get('x', 0), params.get('y', 0),
            params.get('width', 100), params.get('height', 100))
-    log.append(f"  ROI: {roi}")
+    executor._log(f"  ROI: {roi}")
     return {'roi': roi}
 
 
-def handle_feature_tracker(inputs: dict, params: dict, log: list) -> dict:
-    """Track features in video."""
+def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
+    """Track features in video - streams from disk."""
     from vdg.tracking import FeatureTracker
+    from vdg.core.video import VideoReader
     import numpy as np
-    
+
     video_data = inputs.get('video')
     roi = inputs.get('roi')
-    
+
     if video_data is None:
         raise ValueError("No video input")
-    
-    frames = video_data.get('frames', [])
-    frame_nums = video_data.get('frame_nums', [])
-    
-    if not frames:
-        raise ValueError("No frames in video data")
-    
+
     tracker = FeatureTracker(
         num_features=params.get('num_features', 30),
         initial_roi=roi,
         enforce_bbox=params.get('enforce_bbox', True),
     )
-    
+
     track_data = {}
-    
-    for i, (frame_num, frame) in enumerate(zip(frame_nums, frames)):
-        if i == 0:
-            tracker.initialize(frame)
-        else:
-            tracker.update(frame)
-        
-        if tracker.points is not None and len(tracker.points) > 0:
-            # Calculate centroid
-            pts = tracker.points.reshape(-1, 2)
-            cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
-            track_data[frame_num] = {'x': float(cx), 'y': float(cy)}
-        
-        if (i + 1) % 100 == 0:
-            log.append(f"  Tracked {i + 1} frames...")
-    
-    log.append(f"  Tracked {len(frames)} frames, {len(track_data)} valid points")
-    
+
+    # Check if we have a video reference (streaming) or pre-loaded frames
+    if isinstance(video_data, dict) and video_data.get('filepath'):
+        # STREAMING MODE
+        filepath = video_data['filepath']
+        first_frame = video_data.get('first_frame', 1)
+        last_frame = video_data.get('last_frame')
+
+        executor._log(f"  Streaming from {filepath}")
+
+        frame_count = 0
+        # Use software decoding for reliability
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=False) as reader:
+            total_frames = reader.frame_count
+            for frame_num, frame in reader:
+                if frame_count == 0:
+                    tracker.initialize(frame)
+                else:
+                    tracker.update(frame)
+
+                if tracker.points is not None and len(tracker.points) > 0:
+                    pts = tracker.points.reshape(-1, 2)
+                    cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+                    track_data[frame_num] = {'x': float(cx), 'y': float(cy)}
+
+                frame_count += 1
+                if frame_count % 100 == 0:
+                    executor._log(f"  Tracked {frame_count}/{total_frames} frames...")
+
+        executor._log(f"  Tracked {frame_count} frames, {len(track_data)} valid points")
+
+    elif isinstance(video_data, dict) and video_data.get('frames'):
+        # PRE-LOADED MODE (legacy)
+        frames = video_data['frames']
+        frame_nums = video_data.get('frame_nums', list(range(1, len(frames) + 1)))
+
+        executor._log(f"  Processing {len(frames)} pre-loaded frames")
+
+        for i, (frame_num, frame) in enumerate(zip(frame_nums, frames)):
+            if i == 0:
+                tracker.initialize(frame)
+            else:
+                tracker.update(frame)
+
+            if tracker.points is not None and len(tracker.points) > 0:
+                pts = tracker.points.reshape(-1, 2)
+                cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+                track_data[frame_num] = {'x': float(cx), 'y': float(cy)}
+
+            if (i + 1) % 100 == 0:
+                executor._log(f"  Tracked {i + 1} frames...")
+
+        executor._log(f"  Tracked {len(frames)} frames, {len(track_data)} valid points")
+    else:
+        raise ValueError("No video frames available")
+
     return {'points': tracker.points, 'track_data': track_data}
 
 
-def handle_stabilizer(inputs: dict, params: dict, log: list) -> dict:
+def handle_stabilizer(inputs: dict, params: dict, executor) -> dict:
     """Compute stabilization transforms from track data."""
     track1 = inputs.get('track1', {})
     track2 = inputs.get('track2', {})
     props = inputs.get('props')
-    
+
     if not track1:
         raise ValueError("No track data for track1")
-    
+
     mode = params.get('mode', 'two_point')
     ref_frame = params.get('ref_frame', -1)
-    
+    swap_xy = params.get('swap_xy', False)
+    x_flip = params.get('x_flip', False)
+    y_flip = params.get('y_flip', False)
+
+    # Get video dimensions for denormalization
+    if props and hasattr(props, 'width'):
+        width, height = props.width, props.height
+    else:
+        width, height = 1920, 1080
+        executor._log(f"  Warning: No video props, assuming {width}x{height}")
+
+    portrait = height > width
+
+    # Helper to get pixel coordinates from track point
+    # Matches orient_coordinates() in vdg/tracking/stabilizer.py
+    def get_pixel_coords(pt):
+        raw_x, raw_y = pt['x'], pt['y']
+
+        if pt.get('normalized', False):
+            # Apply orientation transform (Blender coord system → OpenCV)
+            if portrait:
+                # Video rotated 90deg CCW in Blender
+                x = raw_y
+                y = raw_x
+            else:
+                # Landscape: default y-flip (Blender uses bottom-left origin)
+                x = raw_x
+                y = 1.0 - raw_y
+
+            # Swap XY if requested
+            if swap_xy:
+                x, y = y, x
+
+            # Flip coordinates (in normalized space)
+            if x_flip:
+                x = 1.0 - x
+            if y_flip:
+                y = 1.0 - y
+
+            # Scale to pixel coordinates
+            x = x * width
+            y = y * height
+        else:
+            # Already pixel coordinates, just apply flips
+            x, y = raw_x, raw_y
+            if swap_xy:
+                x, y = y, x
+            if x_flip:
+                x = width - x
+            if y_flip:
+                y = height - y
+
+        return x, y
+
     # Find common frames
     if track2:
         frames = sorted(set(track1.keys()) & set(track2.keys()))
     else:
         frames = sorted(track1.keys())
-    
+
     if not frames:
         raise ValueError("No valid frames in track data")
-    
+
     if ref_frame == -1:
         ref_frame = frames[0]
-    
-    log.append(f"  Mode: {mode}, ref_frame: {ref_frame}, {len(frames)} frames")
-    
-    # Get reference positions
-    ref1 = track1.get(ref_frame, track1[frames[0]])
-    ref2 = track2.get(ref_frame, track2[frames[0]]) if track2 else None
-    
+
+    executor._log(f"  Mode: {mode}, ref_frame: {ref_frame}, {len(frames)} frames")
+
+    # Get reference positions (in pixels)
+    ref1_pt = track1.get(ref_frame, track1[frames[0]])
+    ref1_x, ref1_y = get_pixel_coords(ref1_pt)
+    ref2_x, ref2_y = None, None
+    if track2:
+        ref2_pt = track2.get(ref_frame, track2[frames[0]])
+        ref2_x, ref2_y = get_pixel_coords(ref2_pt)
+
     transforms = {}
     for f in frames:
-        p1 = track1[f]
-        p2 = track2[f] if track2 else None
-        
+        p1_x, p1_y = get_pixel_coords(track1[f])
+        p2_x, p2_y = get_pixel_coords(track2[f]) if track2 else (None, None)
+
         # Compute transform based on mode
-        if mode == 'single' or not p2:
+        # Store tracking point and reference positions for proper rotation center
+        if mode == 'single' or p2_x is None:
             # Translation only
-            dx = ref1['x'] - p1['x']
-            dy = ref1['y'] - p1['y']
-            transforms[f] = {'dx': dx, 'dy': dy, 'rotation': 0, 'scale': 1}
+            transforms[f] = {
+                'pnt_x': p1_x, 'pnt_y': p1_y,
+                'ref_x': ref1_x, 'ref_y': ref1_y,
+                'rotation': 0, 'scale': 1
+            }
         else:
             # Two-point: translation + rotation + scale
             import math
-            
+
             # Current vector
-            vx = p2['x'] - p1['x']
-            vy = p2['y'] - p1['y']
+            vx = p2_x - p1_x
+            vy = p2_y - p1_y
             # Reference vector
-            rvx = ref2['x'] - ref1['x']
-            rvy = ref2['y'] - ref1['y']
-            
+            rvx = ref2_x - ref1_x
+            rvy = ref2_y - ref1_y
+
             # Scale
             curr_len = math.sqrt(vx*vx + vy*vy)
             ref_len = math.sqrt(rvx*rvx + rvy*rvy)
             scale = ref_len / curr_len if curr_len > 0 else 1
-            
+
             # Rotation
             curr_angle = math.atan2(vy, vx)
             ref_angle = math.atan2(rvy, rvx)
             rotation = ref_angle - curr_angle
-            
-            # Translation (after applying rotation and scale to p1)
-            dx = ref1['x'] - p1['x']
-            dy = ref1['y'] - p1['y']
-            
-            transforms[f] = {'dx': dx, 'dy': dy, 'rotation': rotation, 'scale': scale}
-    
-    return {'transforms': transforms, 'frames': frames, 'props': props}
+
+            transforms[f] = {
+                'pnt_x': p1_x, 'pnt_y': p1_y,
+                'ref_x': ref1_x, 'ref_y': ref1_y,
+                'rotation': rotation, 'scale': scale
+            }
+
+    # Bundle frames with transforms so apply_transform can access the frame range
+    return {'transforms': {'transforms': transforms, 'frames': frames}, 'props': props}
 
 
-def handle_apply_transform(inputs: dict, params: dict, log: list) -> dict:
-    """Apply transforms to video frames."""
+def handle_apply_transform(inputs: dict, params: dict, executor) -> dict:
+    """Apply transforms to video frames - streams input, stores output."""
+    from vdg.core.video import VideoReader
     import cv2
     import numpy as np
-    
-    video_data = inputs.get('video')
+    import math
+
+    video_data = inputs.get('video_in')
     transform_data = inputs.get('transforms', {})
     transforms = transform_data.get('transforms', {})
-    
+
     if video_data is None:
-        raise ValueError("No video input")
-    
-    frames = video_data.get('frames', [])
-    frame_nums = video_data.get('frame_nums', [])
-    props = video_data.get('props')
-    
-    if not frames:
-        raise ValueError("No frames in video data")
-    
+        raise ValueError("No video input - connect to video_in port")
+
     x_pad = params.get('x_pad', 0)
     y_pad = params.get('y_pad', 0)
     x_off = params.get('x_offset', 0)
     y_off = params.get('y_offset', 0)
-    
-    in_h, in_w = frames[0].shape[:2]
-    out_w = in_w + x_pad
-    out_h = in_h + y_pad
-    
-    log.append(f"  Input: {in_w}x{in_h}, Output: {out_w}x{out_h}")
-    
+
+    def build_transform_matrix(t, in_w, in_h, x_pad, y_pad, x_off, y_off):
+        """Build transform matrix matching original stabilizer.py."""
+        out_w = in_w + x_pad
+        out_h = in_h + y_pad
+
+        if t is None:
+            return np.float32([[1, 0, x_pad / 2], [0, 1, y_pad / 2]]), out_w, out_h
+
+        pnt_x = t.get('pnt_x', in_w / 2)
+        pnt_y = t.get('pnt_y', in_h / 2)
+        ref_x = t.get('ref_x', pnt_x)
+        ref_y = t.get('ref_y', pnt_y)
+        rotation = t.get('rotation', 0)
+        scale = t.get('scale', 1)
+
+        # M_offset: translate tracking point to origin
+        M_offset = np.float32([
+            [1, 0, -pnt_x],
+            [0, 1, -pnt_y],
+            [0, 0, 1]
+        ])
+
+        # M_rot: rotate and scale around origin
+        rot_deg = -math.degrees(rotation)
+        M_rot = cv2.getRotationMatrix2D((0, 0), rot_deg, scale)
+        M_rot = np.vstack([M_rot, [0, 0, 1]])
+
+        # M_place: translate to reference position + padding
+        M_place = np.float32([
+            [1, 0, ref_x + x_pad / 2 + x_off],
+            [0, 1, ref_y + y_pad / 2 + y_off],
+            [0, 0, 1]
+        ])
+
+        # Combine: M = M_place @ M_rot @ M_offset
+        M = np.matmul(M_rot, M_offset)
+        M = np.matmul(M_place, M)
+        return M[:2], out_w, out_h
+
     stabilized_frames = []
     mask_frames = []
-    
-    for i, (frame_num, frame) in enumerate(zip(frame_nums, frames)):
-        t = transforms.get(frame_num, {'dx': 0, 'dy': 0, 'rotation': 0, 'scale': 1})
-        
-        # Build transform matrix
-        cx, cy = frame.shape[1] / 2, frame.shape[0] / 2
-        
-        # Rotation + scale around center
-        rot_deg = np.degrees(t.get('rotation', 0))
-        scale = t.get('scale', 1)
-        M = cv2.getRotationMatrix2D((cx, cy), rot_deg, scale)
-        
-        # Add translation
-        M[0, 2] += t['dx'] + x_pad / 2 + x_off
-        M[1, 2] += t['dy'] + y_pad / 2 + y_off
-        
-        # Apply transform
-        stabilized = cv2.warpAffine(frame, M, (out_w, out_h))
-        stabilized_frames.append(stabilized)
-        
-        # Create mask
-        mask = np.ones((frame.shape[0], frame.shape[1]), dtype=np.uint8) * 255
-        mask_warped = cv2.warpAffine(mask, M, (out_w, out_h))
-        mask_frames.append(mask_warped)
-        
-        if (i + 1) % 100 == 0:
-            log.append(f"  Transformed {i + 1} frames...")
-    
-    log.append(f"  Stabilized {len(stabilized_frames)} frames")
-    
-    return {'video': stabilized_frames, 'mask': mask_frames, 'width': out_w, 'height': out_h}
 
+    # Check if we have a video reference (streaming) or pre-loaded frames
+    if isinstance(video_data, dict) and video_data.get('filepath'):
+        # STREAMING MODE
+        filepath = video_data['filepath']
+        first_frame = video_data.get('first_frame', 1)
+        last_frame = video_data.get('last_frame')
+        props = video_data.get('props')
 
-def handle_frame_average(inputs: dict, params: dict, log: list) -> dict:
-    """Average frames together."""
-    import numpy as np
-    
-    frames = inputs.get('video', [])
-    masks = inputs.get('mask', [])
-    
-    if not frames:
-        raise ValueError("No frames to average")
-    
-    if isinstance(frames[0], np.ndarray):
-        # Already have frame list
-        pass
+        executor._log(f"  Streaming from {filepath}")
+
+        in_w, in_h = props.width, props.height
+        out_w = in_w + x_pad
+        out_h = in_h + y_pad
+        executor._log(f"  Input: {in_w}x{in_h}, Output: {out_w}x{out_h}")
+
+        frame_count = 0
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=False) as reader:
+            total_frames = reader.frame_count
+            for frame_num, frame in reader:
+                t = transforms.get(frame_num)
+                M, out_w, out_h = build_transform_matrix(t, in_w, in_h, x_pad, y_pad, x_off, y_off)
+
+                # Apply transform
+                stabilized = cv2.warpAffine(frame, M, (out_w, out_h))
+                stabilized_frames.append(stabilized)
+
+                # Create mask
+                mask = np.ones((in_h, in_w), dtype=np.uint8) * 255
+                mask_warped = cv2.warpAffine(mask, M, (out_w, out_h))
+                mask_frames.append(mask_warped)
+
+                frame_count += 1
+                if frame_count % 100 == 0:
+                    executor._log(f"  Transformed {frame_count}/{total_frames} frames...")
+
+        executor._log(f"  Stabilized {frame_count} frames")
+
+    elif isinstance(video_data, dict) and video_data.get('frames'):
+        # PRE-LOADED MODE (legacy)
+        frames = video_data['frames']
+        frame_nums = video_data.get('frame_nums', list(range(1, len(frames) + 1)))
+        props = video_data.get('props')
+
+        in_h, in_w = frames[0].shape[:2]
+        out_w = in_w + x_pad
+        out_h = in_h + y_pad
+        executor._log(f"  Input: {in_w}x{in_h}, Output: {out_w}x{out_h}")
+
+        for i, (frame_num, frame) in enumerate(zip(frame_nums, frames)):
+            t = transforms.get(frame_num)
+            M, out_w, out_h = build_transform_matrix(t, in_w, in_h, x_pad, y_pad, x_off, y_off)
+
+            stabilized = cv2.warpAffine(frame, M, (out_w, out_h))
+            stabilized_frames.append(stabilized)
+
+            mask = np.ones((in_h, in_w), dtype=np.uint8) * 255
+            mask_warped = cv2.warpAffine(mask, M, (out_w, out_h))
+            mask_frames.append(mask_warped)
+
+            if (i + 1) % 100 == 0:
+                executor._log(f"  Transformed {i + 1} frames...")
+
+        executor._log(f"  Stabilized {len(stabilized_frames)} frames")
     else:
-        raise ValueError("Expected list of frames")
-    
+        raise ValueError("No video frames available")
+
+    return {'video_out': stabilized_frames, 'mask': mask_frames, 'width': out_w, 'height': out_h}
+
+
+def handle_frame_average(inputs: dict, params: dict, executor) -> dict:
+    """Average frames together - streams from disk to minimize memory usage."""
+    from vdg.core.video import VideoReader
+    import numpy as np
+
+    video_data = inputs.get('video', {})
+    masks = inputs.get('mask', [])
+
     comp_mode = params.get('comp_mode', 'on_black')
-    gamma = params.get('gamma', 1.0)
     brightness = params.get('brightness', 1.0)
-    
-    log.append(f"  Averaging {len(frames)} frames, mode: {comp_mode}")
-    
-    # Accumulate
-    acc = np.zeros(frames[0].shape, dtype=np.float64)
-    alpha_acc = np.zeros(frames[0].shape[:2], dtype=np.float64)
-    
-    for i, frame in enumerate(frames):
-        acc += frame.astype(np.float64)
-        if masks and i < len(masks):
-            alpha_acc += masks[i].astype(np.float64) / 255.0
-    
+
+    # Check if we have a video reference (streaming mode) or pre-loaded frames
+    if isinstance(video_data, dict) and video_data.get('filepath'):
+        # STREAMING MODE - read frames one at a time, don't store in memory
+        filepath = video_data['filepath']
+        first_frame = video_data.get('first_frame', 1)
+        last_frame = video_data.get('last_frame')
+        props = video_data.get('props')
+
+        executor._log(f"  Streaming from {filepath}")
+        executor._log(f"  Mode: {comp_mode}, brightness: {brightness}")
+
+        # Initialize accumulator on first frame
+        acc = None
+        alpha_acc = None
+        frame_count = 0
+
+        # Use software decoding for reliability
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=False) as reader:
+            total_frames = reader.frame_count
+            for frame_num, frame in reader:
+                # Initialize accumulators on first frame
+                if acc is None:
+                    acc = np.zeros(frame.shape, dtype=np.float64)
+                    alpha_acc = np.zeros(frame.shape[:2], dtype=np.float64)
+
+                # Accumulate
+                acc += frame.astype(np.float64)
+
+                # Compute alpha from luminance
+                frame_f = frame.astype(np.float32) / 255.0
+                alpha = np.power(np.clip(frame_f.mean(axis=2) * 255 / 16.0, 0, 1), 4)
+                alpha_acc += alpha
+
+                frame_count += 1
+                if frame_count % 100 == 0:
+                    executor._log(f"  Processed {frame_count}/{total_frames} frames...")
+
+        executor._log(f"  Processed {frame_count} frames total")
+
+    elif isinstance(video_data, dict) and video_data.get('frames'):
+        # PRE-LOADED MODE - frames already in memory (legacy support)
+        frames = video_data['frames']
+        executor._log(f"  Processing {len(frames)} pre-loaded frames")
+
+        acc = np.zeros(frames[0].shape, dtype=np.float64)
+        alpha_acc = np.zeros(frames[0].shape[:2], dtype=np.float64)
+
+        for i, frame in enumerate(frames):
+            acc += frame.astype(np.float64)
+            if masks and i < len(masks):
+                alpha_acc += masks[i].astype(np.float64) / 255.0
+
+        frame_count = len(frames)
+
+    elif isinstance(video_data, list):
+        # LIST MODE - list of frames passed directly
+        frames = video_data
+        executor._log(f"  Processing {len(frames)} frames from list")
+
+        acc = np.zeros(frames[0].shape, dtype=np.float64)
+        alpha_acc = np.zeros(frames[0].shape[:2], dtype=np.float64)
+
+        for i, frame in enumerate(frames):
+            acc += frame.astype(np.float64)
+            if masks and i < len(masks):
+                alpha_acc += masks[i].astype(np.float64) / 255.0
+
+        frame_count = len(frames)
+    else:
+        raise ValueError("No video input - connect a Video Input node")
+
+    if frame_count == 0:
+        raise ValueError("No frames to average")
+
     # Average
-    n = len(frames)
-    result = acc / n
-    alpha = alpha_acc / n
-    
-    # Apply gamma and brightness
-    if gamma != 1.0:
-        result = np.power(result / 255.0, 1.0 / gamma) * 255.0
+    result = acc / frame_count
+    alpha = alpha_acc / frame_count
+
+    # Apply brightness
     result *= brightness
-    
+
     # Composite mode
     if comp_mode == 'on_white':
         alpha_3ch = np.dstack([alpha, alpha, alpha])
         white = np.ones_like(result) * 255
         result = result * alpha_3ch + white * (1 - alpha_3ch)
-    
+    elif comp_mode == 'unpremult':
+        alpha_3ch = np.dstack([alpha, alpha, alpha])
+        alpha_3ch = np.clip(alpha_3ch, 0.001, 1.0)  # Avoid division by zero
+        result = result / alpha_3ch
+
     result = np.clip(result, 0, 255).astype(np.uint8)
     alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
-    
-    log.append(f"  Averaged to {result.shape[1]}x{result.shape[0]}")
-    
+
+    executor._log(f"  Output: {result.shape[1]}x{result.shape[0]}")
+
     return {'image': result, 'alpha': alpha}
 
 
-def handle_image_output(inputs: dict, params: dict, log: list) -> dict:
+def handle_image_output(inputs: dict, params: dict, executor) -> dict:
     """Save image to file."""
     import cv2
     import numpy as np
-    
+    from pathlib import Path
+
     image = inputs.get('image')
     if image is None:
         raise ValueError("No image to save")
-    
-    filepath = params.get('filepath', 'output.png')
+
+    filepath = params.get('filepath', '').strip()
+    if not filepath:
+        filepath = 'output.png'
+
+    # Ensure valid extension
+    path = Path(filepath)
+    if not path.suffix or path.suffix.lower() not in ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.exr']:
+        filepath = str(path.with_suffix('.png'))
+        executor._log(f"  Warning: Added .png extension: {filepath}")
+
     bit_depth = params.get('bit_depth', '16')
-    
+
     if bit_depth == '16':
         # Convert to 16-bit
         if image.dtype == np.uint8:
             image = (image.astype(np.uint16) * 257)  # Scale 0-255 to 0-65535
-    
-    cv2.imwrite(filepath, image)
-    log.append(f"  Saved {filepath} ({bit_depth}-bit)")
-    
+
+    success = cv2.imwrite(filepath, image)
+    if not success:
+        raise ValueError(f"Failed to write image to {filepath}")
+
+    executor._log(f"  Saved {filepath} ({bit_depth}-bit, {image.shape[1]}x{image.shape[0]})")
+
     return {'filepath': filepath}
 
 
-def handle_video_output(inputs: dict, params: dict, log: list) -> dict:
+def handle_video_output(inputs: dict, params: dict, executor) -> dict:
     """Save video to file."""
     import cv2
-    
+
     frames = inputs.get('video', [])
     props = inputs.get('props')
-    
+
     # Handle different input formats
     if isinstance(frames, dict) and 'frames' in frames:
         actual_frames = frames['frames']
@@ -886,105 +1714,191 @@ def handle_video_output(inputs: dict, params: dict, log: list) -> dict:
         actual_frames = frames
     else:
         raise ValueError("No frames to save")
-    
+
     if not actual_frames:
         raise ValueError("No frames to save")
-    
-    filepath = params.get('filepath', 'output.mp4')
-    
+
+    filepath = params.get('filepath', 'output.mp4').strip()
+
     # Get dimensions from first frame
     h, w = actual_frames[0].shape[:2]
     fps = props.fps if props and hasattr(props, 'fps') else 30
-    
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter(filepath, fourcc, fps, (w, h))
-    
+
     for frame in actual_frames:
         writer.write(frame)
-    
+
     writer.release()
-    log.append(f"  Saved {filepath} ({len(actual_frames)} frames, {w}x{h})")
-    
+    executor._log(f"  Saved {filepath} ({len(actual_frames)} frames, {w}x{h})")
+
     return {'filepath': filepath}
 
 
-def handle_track_output(inputs: dict, params: dict, log: list) -> dict:
+def handle_track_input(inputs: dict, params: dict, executor) -> dict:
+    """Load track data from a .crv file."""
+    from vdg.tracking.track_io import read_crv_file
+    from pathlib import Path
+
+    filepath = params.get('filepath', '').strip()
+    if not filepath:
+        raise ValueError("No track file specified")
+
+    if not Path(filepath).exists():
+        raise ValueError(f"Track file not found: {filepath}")
+
+    executor._log(f"  Loading track file: {filepath}")
+
+    # Read the CRV file - returns dict of frame -> (x, y) with normalized coords
+    raw_data = read_crv_file(filepath)
+
+    # Convert to the format used by other nodes: dict of frame -> {'x': x, 'y': y}
+    # Note: CRV files typically store normalized coordinates (0-1)
+    # We need to convert them to pixel coordinates if we know the video dimensions
+    # For now, assume they need to be scaled by video dimensions later
+    track_data = {}
+    for frame, (x, y) in raw_data.items():
+        track_data[frame] = {'x': x, 'y': y, 'normalized': True}
+
+    executor._log(f"  Loaded {len(track_data)} frames of track data")
+
+    return {'track_data': track_data}
+
+
+def handle_track_output(inputs: dict, params: dict, executor) -> dict:
     """Save track data to .crv file."""
     track_data = inputs.get('track_data', {})
     props = inputs.get('props')
-    
+
     if not track_data:
         raise ValueError("No track data to save")
-    
-    filepath = params.get('filepath', 'track.crv')
-    
+
+    filepath = params.get('filepath', 'track.crv').strip()
+
     # Get dimensions from props
     if props and hasattr(props, 'width'):
         w, h = props.width, props.height
     else:
         w, h = 1920, 1080
-    
+
     with open(filepath, 'w') as f:
         for frame_num in sorted(track_data.keys()):
             pt = track_data[frame_num]
             x_norm = pt['x'] / w
             y_norm = pt['y'] / h
             f.write(f"{frame_num} [[ {x_norm}, {y_norm}]]\n")
-    
-    log.append(f"  Saved {filepath} ({len(track_data)} frames)")
-    
+
+    executor._log(f"  Saved {filepath} ({len(track_data)} frames)")
+
     return {'filepath': filepath}
 
 
-def handle_clahe(inputs: dict, params: dict, log: list) -> dict:
+def handle_clahe(inputs: dict, params: dict, executor) -> dict:
     """Apply CLAHE contrast enhancement."""
     import cv2
-    
+
     image = inputs.get('image')
     if image is None:
         raise ValueError("No image input")
-    
+
     clip = params.get('clip_limit', 40.0)
     grid = params.get('grid_size', 8)
-    
+
     clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid))
-    
+
     # Apply to each channel
     channels = cv2.split(image)
     enhanced = [clahe.apply(ch) for ch in channels]
     result = cv2.merge(enhanced)
-    
-    log.append(f"  Applied CLAHE (clip={clip}, grid={grid})")
-    
+
+    executor._log(f"  Applied CLAHE (clip={clip}, grid={grid})")
+
     return {'image': result}
 
 
-def handle_gaussian_filter(inputs: dict, params: dict, log: list) -> dict:
+def handle_gamma(inputs: dict, params: dict, executor) -> dict:
+    """Apply gamma correction for linear/sRGB conversion."""
+    import numpy as np
+
+    video_in = inputs.get('video_in')
+    image_in = inputs.get('image_in')
+    mask_in = inputs.get('mask_in')
+
+    # Accept either video or image input
+    input_data = video_in if video_in is not None else image_in
+
+    if input_data is None:
+        raise ValueError("No video or image input")
+
+    mode = params.get('mode', 'to_linear')
+    gamma = params.get('gamma', 2.2)
+
+    # Determine the gamma exponent based on mode
+    if mode == 'to_linear':
+        exponent = gamma
+    else:
+        exponent = 1.0 / gamma
+
+    executor._log(f"  Gamma correction: {mode} (gamma={gamma})")
+
+    def apply_gamma(frame, exponent):
+        if frame.dtype == np.uint8:
+            max_val = 255.0
+        elif frame.dtype == np.uint16:
+            max_val = 65535.0
+        else:
+            max_val = 1.0
+
+        frame_float = frame.astype(np.float32) / max_val
+        frame_corrected = np.power(frame_float, exponent)
+        return np.clip(frame_corrected * max_val, 0, max_val).astype(frame.dtype)
+
+    # Handle different input formats
+    if isinstance(input_data, dict) and 'frames' in input_data:
+        frames = input_data['frames']
+        corrected_frames = [apply_gamma(f, exponent) for f in frames]
+        executor._log(f"  Processed {len(corrected_frames)} frames")
+        return {'video_out': corrected_frames, 'image_out': None, 'mask_out': mask_in}
+    elif isinstance(input_data, list):
+        corrected_frames = [apply_gamma(f, exponent) for f in input_data]
+        executor._log(f"  Processed {len(corrected_frames)} frames")
+        return {'video_out': corrected_frames, 'image_out': None, 'mask_out': mask_in}
+    elif isinstance(input_data, np.ndarray):
+        # Single image
+        corrected = apply_gamma(input_data, exponent)
+        executor._log(f"  Processed single image")
+        return {'video_out': None, 'image_out': corrected, 'mask_out': mask_in}
+    else:
+        raise ValueError("Unsupported input format")
+
+
+def handle_gaussian_filter(inputs: dict, params: dict, executor) -> dict:
     """Apply Gaussian smoothing to track data."""
     track_data = inputs.get('track_data', {})
-    
+
     if not track_data:
         raise ValueError("No track data")
-    
+
     sigma = params.get('sigma', 5.0)
-    
+
     try:
         from scipy.ndimage import gaussian_filter1d
         import numpy as np
-        
+
         frames = sorted(track_data.keys())
         x_vals = np.array([track_data[f]['x'] for f in frames])
         y_vals = np.array([track_data[f]['y'] for f in frames])
-        
+
         x_smooth = gaussian_filter1d(x_vals, sigma=sigma)
         y_smooth = gaussian_filter1d(y_vals, sigma=sigma)
-        
+
         result = {f: {'x': x_smooth[i], 'y': y_smooth[i]} for i, f in enumerate(frames)}
-        log.append(f"  Smoothed {len(frames)} points (sigma={sigma})")
-        
+        executor._log(f"  Smoothed {len(frames)} points (sigma={sigma})")
+
         return {'track_data': result}
     except ImportError:
-        log.append(f"  Warning: scipy not installed, returning unfiltered data")
+        executor._log(f"  Warning: scipy not installed, returning unfiltered data")
         return {'track_data': track_data}
 
 
@@ -999,10 +1913,11 @@ NODE_HANDLERS = {
     'image_output': handle_image_output,
     'video_output': handle_video_output,
     'track_output': handle_track_output,
-    'track_input': lambda i, p, l: {'track_data': {}},  # TODO
+    'track_input': handle_track_input,
     'clahe': handle_clahe,
+    'gamma': handle_gamma,
     'gaussian_filter': handle_gaussian_filter,
-    'color_correction': lambda i, p, l: i,  # TODO
+    'color_correction': lambda i, p, e: i,  # TODO
 }
 
 
