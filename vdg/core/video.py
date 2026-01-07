@@ -151,13 +151,35 @@ class VideoReader:
         """Try to set up FFmpeg with hardware-accelerated decoding."""
         if not shutil.which("ffmpeg"):
             return False
-        
+
         try:
             # Build FFmpeg command for hardware decoding
             cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-            
-            # Add hardware acceleration args
-            cmd.extend(hw_config.get_ffmpeg_input_args())
+
+            # Add hardware acceleration args - use global config but respect local override
+            if self._use_hardware is True:
+                # Explicit override: always add hwaccel args if backend is configured
+                if hw_config.hwaccel:
+                    cmd.extend(["-hwaccel", hw_config.hwaccel])
+                    if hw_config.hwaccel_device:
+                        cmd.extend(["-hwaccel_device", hw_config.hwaccel_device])
+                    # Don't specify hwaccel_output_format - let FFmpeg handle
+                    # the conversion to system memory automatically
+            else:
+                # Use global config settings (may include hwaccel_output_format)
+                args = hw_config.get_ffmpeg_input_args()
+                # Remove hwaccel_output_format for raw pipe output compatibility
+                filtered_args = []
+                skip_next = False
+                for arg in args:
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    if arg == "-hwaccel_output_format":
+                        skip_next = True
+                        continue
+                    filtered_args.append(arg)
+                cmd.extend(filtered_args)
             
             # Seek to start frame
             if self.first_frame > 1:

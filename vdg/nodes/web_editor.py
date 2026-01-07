@@ -66,6 +66,7 @@ NODE_DEFINITIONS = [
             NodeParam("filepath", "file", ""),
             NodeParam("first_frame", "int", 1, min=1),
             NodeParam("last_frame", "int", -1),
+            NodeParam("use_hardware", "bool", False),
         ],
         color="#4CAF50",
     ),
@@ -639,6 +640,7 @@ class GraphExecutor:
         first_frame = source_params.get('first_frame', 1)
         last_frame = source_params.get('last_frame', -1)
         last_frame = None if last_frame == -1 else last_frame
+        use_hardware = source_params.get('use_hardware', False)
 
         if not filepath:
             errors.append({'node_id': chain[0], 'type': 'video_input', 'error': 'No filepath specified'})
@@ -656,7 +658,7 @@ class GraphExecutor:
 
         # Store video reference for non-streaming nodes that might need it
         self.outputs[chain[0]] = {
-            'video': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
+            'video': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props, 'use_hardware': use_hardware},
             'props': props
         }
 
@@ -703,7 +705,8 @@ class GraphExecutor:
 
         # Stream frames through the chain
         frame_count = 0
-        with VideoReader(filepath, first_frame, last_frame, use_hardware=False) as reader:
+        self._log(f"  Hardware decode: {use_hardware}")
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware) as reader:
             total_frames = reader.frame_count
             self._log(f"  Streaming {total_frames} frames...")
 
@@ -1239,12 +1242,12 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
         filepath = video_data['filepath']
         first_frame = video_data.get('first_frame', 1)
         last_frame = video_data.get('last_frame')
+        use_hardware = video_data.get('use_hardware', False)
 
         executor._log(f"  Streaming from {filepath}")
 
         frame_count = 0
-        # Use software decoding for reliability
-        with VideoReader(filepath, first_frame, last_frame, use_hardware=False) as reader:
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware) as reader:
             total_frames = reader.frame_count
             for frame_num, frame in reader:
                 if frame_count == 0:
@@ -1491,6 +1494,7 @@ def handle_apply_transform(inputs: dict, params: dict, executor) -> dict:
         first_frame = video_data.get('first_frame', 1)
         last_frame = video_data.get('last_frame')
         props = video_data.get('props')
+        use_hardware = video_data.get('use_hardware', False)
 
         executor._log(f"  Streaming from {filepath}")
 
@@ -1500,7 +1504,7 @@ def handle_apply_transform(inputs: dict, params: dict, executor) -> dict:
         executor._log(f"  Input: {in_w}x{in_h}, Output: {out_w}x{out_h}")
 
         frame_count = 0
-        with VideoReader(filepath, first_frame, last_frame, use_hardware=False) as reader:
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware) as reader:
             total_frames = reader.frame_count
             for frame_num, frame in reader:
                 t = transforms.get(frame_num)
@@ -1571,6 +1575,7 @@ def handle_frame_average(inputs: dict, params: dict, executor) -> dict:
         first_frame = video_data.get('first_frame', 1)
         last_frame = video_data.get('last_frame')
         props = video_data.get('props')
+        use_hardware = video_data.get('use_hardware', False)
 
         executor._log(f"  Streaming from {filepath}")
         executor._log(f"  Mode: {comp_mode}, brightness: {brightness}")
@@ -1580,8 +1585,7 @@ def handle_frame_average(inputs: dict, params: dict, executor) -> dict:
         alpha_acc = None
         frame_count = 0
 
-        # Use software decoding for reliability
-        with VideoReader(filepath, first_frame, last_frame, use_hardware=False) as reader:
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware) as reader:
             total_frames = reader.frame_count
             for frame_num, frame in reader:
                 # Initialize accumulators on first frame
