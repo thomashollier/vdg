@@ -150,5 +150,86 @@ class TestVideoProperties:
         assert d['frame_count'] == 100
 
 
+class TestHardwareConfig:
+    """Tests for hardware acceleration configuration."""
+    
+    def test_import(self):
+        """Test that hardware config can be imported."""
+        from vdg.core.hardware import hw_config, configure_hardware
+        assert hw_config is not None
+        assert configure_hardware is not None
+    
+    def test_package_level_import(self):
+        """Test hardware config available at package level."""
+        import vdg
+        assert hasattr(vdg, 'hw_config')
+        assert hasattr(vdg, 'configure_hardware')
+        assert hasattr(vdg, 'print_hardware_status')
+    
+    def test_disable_enable(self):
+        """Test disabling and enabling hardware acceleration."""
+        from vdg.core.hardware import hw_config
+        
+        original = hw_config.enabled
+        
+        hw_config.disable()
+        assert hw_config.enabled is False
+        assert hw_config.encode_enabled is False
+        assert hw_config.decode_enabled is False
+        
+        hw_config.enable()
+        # enabled will be True, but encode/decode depend on availability
+        assert hw_config.enabled is True
+        
+        # Restore original state
+        if not original:
+            hw_config.disable()
+    
+    def test_configure_function(self):
+        """Test configure_hardware function."""
+        from vdg.core.hardware import configure_hardware, hw_config
+        
+        original_enabled = hw_config.enabled
+        
+        # Disable via configure function
+        configure_hardware(enabled=False)
+        assert hw_config.enabled is False
+        
+        # Re-enable
+        configure_hardware(enabled=True)
+        assert hw_config.enabled is True
+        
+        # Test bitrate setting
+        configure_hardware(bitrate="10M")
+        assert hw_config.encode_bitrate == "10M"
+        
+        # Restore
+        configure_hardware(enabled=original_enabled, bitrate="20M")
+    
+    def test_status_dict(self):
+        """Test status() returns proper dict."""
+        from vdg.core.hardware import hw_config
+        
+        status = hw_config.status()
+        
+        assert 'enabled' in status
+        assert 'backend' in status
+        assert 'platform' in status
+        assert 'ffmpeg_available' in status
+        assert 'encode_available' in status
+        assert 'decode_available' in status
+    
+    def test_ffmpeg_args(self):
+        """Test FFmpeg argument generation."""
+        from vdg.core.hardware import hw_config
+        
+        # These should return lists (possibly empty)
+        input_args = hw_config.get_ffmpeg_input_args()
+        output_args = hw_config.get_ffmpeg_output_args()
+        
+        assert isinstance(input_args, list)
+        assert isinstance(output_args, list)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
