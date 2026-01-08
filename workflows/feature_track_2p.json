@@ -3,11 +3,11 @@
     {
       "id": "n1",
       "type": "video_input",
-      "x": 100,
-      "y": 200,
+      "x": -49,
+      "y": 227,
       "params": {
-        "filepath": "",
-        "first_frame": 1,
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/12102024150054560.mov",
+        "first_frame": 1550,
         "last_frame": -1,
         "use_hardware": false
       }
@@ -15,27 +15,27 @@
     {
       "id": "n2",
       "type": "roi",
-      "x": 100,
-      "y": 20,
+      "x": 136,
+      "y": -117,
       "params": {
         "pick_roi": "Pick ROI",
-        "x": 0,
-        "y": 0,
-        "width": 100,
-        "height": 100
+        "x": 1153,
+        "y": 513,
+        "width": 97,
+        "height": 177
       }
     },
     {
       "id": "n3",
       "type": "roi",
-      "x": 100,
-      "y": 110,
+      "x": 146,
+      "y": 39,
       "params": {
         "pick_roi": "Pick ROI",
-        "x": 200,
-        "y": 0,
-        "width": 100,
-        "height": 100
+        "x": 2211,
+        "y": 429,
+        "width": 67,
+        "height": 181
       }
     },
     {
@@ -67,8 +67,8 @@
     {
       "id": "n6",
       "type": "gamma",
-      "x": 350,
-      "y": 200,
+      "x": 346,
+      "y": 439,
       "params": {
         "mode": "to_linear",
         "gamma": 2.2

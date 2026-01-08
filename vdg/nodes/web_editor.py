@@ -974,7 +974,10 @@ class GraphExecutor:
                 'alpha_accumulator': None,
                 'frame_count': 0,
                 'tracker': None,
+                'tracker2': None,  # For feature_tracker_2p
                 'track_data': {},
+                'track_data1': {},  # For feature_tracker_2p
+                'track_data2': {},  # For feature_tracker_2p
             }
 
         # Determine frame range - use transform frames if available
@@ -1005,6 +1008,10 @@ class GraphExecutor:
                     try:
                         if ntype == 'feature_tracker':
                             current_frame, current_data = self._stream_feature_tracker(
+                                current_frame, current_data, state, params, inputs
+                            )
+                        elif ntype == 'feature_tracker_2p':
+                            current_frame, current_data = self._stream_feature_tracker_2p(
                                 current_frame, current_data, state, params, inputs
                             )
                         elif ntype == 'apply_transform':
@@ -1055,6 +1062,17 @@ class GraphExecutor:
                         'points': state.get('last_points'),
                     }
                     self._log(f"  ✓ feature_tracker: {len(state['track_data'])} tracked frames")
+
+                elif ntype == 'feature_tracker_2p':
+                    # Close preview video writer if it exists
+                    if state.get('preview_writer'):
+                        state['preview_writer'].release()
+                        self._log(f"  Preview video saved")
+                    self.outputs[nid] = {
+                        'track_data1': state['track_data1'],
+                        'track_data2': state['track_data2'],
+                    }
+                    self._log(f"  ✓ feature_tracker_2p: track1={len(state['track_data1'])}, track2={len(state['track_data2'])} frames")
 
                 elif ntype == 'frame_average':
                     result, alpha = self._finalize_frame_average(state, params)
@@ -1139,6 +1157,93 @@ class GraphExecutor:
             if state.get('initial_roi'):
                 rx, ry, rw, rh = [int(v) for v in state['initial_roi']]
                 cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (0, 0, 255), 1)
+            state['preview_writer'].write(preview)
+
+        return frame, data
+
+    def _stream_feature_tracker_2p(self, frame, data, state, params, inputs):
+        """Process one frame through two-point feature tracker."""
+        from vdg.tracking import FeatureTracker
+        import cv2
+
+        if state['tracker'] is None:
+            roi1 = inputs.get('roi1')
+            roi2 = inputs.get('roi2')
+            tracker_params = {
+                'num_features': params.get('num_features', 30),
+                'enforce_bbox': params.get('enforce_bbox', True),
+                'win_size': params.get('win_size', 21),
+                'pyramid_levels': params.get('pyramid_levels', 3),
+            }
+            state['tracker'] = FeatureTracker(initial_roi=roi1, **tracker_params)
+            state['tracker2'] = FeatureTracker(initial_roi=roi2, **tracker_params)
+            state['tracker'].initialize(frame)
+            state['tracker2'].initialize(frame)
+            state['initial_roi1'] = roi1
+            state['initial_roi2'] = roi2
+
+            # Initialize preview video writer if path is set
+            preview_path = params.get('preview_path', '').strip()
+            if preview_path:
+                h, w = frame.shape[:2]
+                fps = data.get('props').fps if data.get('props') else 30
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                state['preview_writer'] = cv2.VideoWriter(preview_path, fourcc, fps, (w, h))
+                self._log(f"  Preview output: {preview_path}")
+        else:
+            state['tracker'].update(frame)
+            state['tracker2'].update(frame)
+
+        tracker1 = state['tracker']
+        tracker2 = state['tracker2']
+
+        # Record track 1
+        if tracker1.points is not None and len(tracker1.points) > 0:
+            pts = tracker1.points.reshape(-1, 2)
+            cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+            state['track_data1'][data['frame_num']] = {'x': float(cx), 'y': float(cy)}
+
+        # Record track 2
+        if tracker2.points is not None and len(tracker2.points) > 0:
+            pts = tracker2.points.reshape(-1, 2)
+            cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+            state['track_data2'][data['frame_num']] = {'x': float(cx), 'y': float(cy)}
+
+        state['frame_count'] += 1
+
+        # Write preview frame if enabled
+        if state.get('preview_writer'):
+            preview = frame.copy()
+            # Draw tracker 1 (green)
+            if tracker1.points is not None:
+                for pt in tracker1.points.reshape(-1, 2):
+                    cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (0, 255, 0), -1)
+                pts = tracker1.points.reshape(-1, 2)
+                cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
+                cv2.circle(preview, (cx, cy), 8, (0, 255, 0), 2)
+                cv2.drawMarker(preview, (cx, cy), (0, 255, 0), cv2.MARKER_CROSS, 16, 2)
+            if tracker1.current_roi:
+                rx, ry, rw, rh = [int(v) for v in tracker1.current_roi]
+                cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 2)
+            if state.get('initial_roi1'):
+                rx, ry, rw, rh = [int(v) for v in state['initial_roi1']]
+                cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (0, 200, 0), 1)
+
+            # Draw tracker 2 (blue)
+            if tracker2.points is not None:
+                for pt in tracker2.points.reshape(-1, 2):
+                    cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (255, 0, 0), -1)
+                pts = tracker2.points.reshape(-1, 2)
+                cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
+                cv2.circle(preview, (cx, cy), 8, (255, 0, 0), 2)
+                cv2.drawMarker(preview, (cx, cy), (255, 0, 0), cv2.MARKER_CROSS, 16, 2)
+            if tracker2.current_roi:
+                rx, ry, rw, rh = [int(v) for v in tracker2.current_roi]
+                cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (255, 0, 0), 2)
+            if state.get('initial_roi2'):
+                rx, ry, rw, rh = [int(v) for v in state['initial_roi2']]
+                cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (200, 0, 0), 1)
+
             state['preview_writer'].write(preview)
 
         return frame, data
