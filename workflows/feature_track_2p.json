@@ -20,9 +20,9 @@
       "params": {
         "pick_roi": "Pick ROI",
         "x": 1144,
-        "y": 501,
-        "width": 89,
-        "height": 122
+        "y": 724,
+        "width": 131,
+        "height": 131
       }
     },
     {
@@ -32,10 +32,10 @@
       "y": 39,
       "params": {
         "pick_roi": "Pick ROI",
-        "x": 2215,
-        "y": 429,
-        "width": 72,
-        "height": 97
+        "x": 2206,
+        "y": 518,
+        "width": 135,
+        "height": 160
       }
     },
     {
@@ -46,8 +46,8 @@
       "params": {
         "num_features": 30,
         "enforce_bbox": true,
-        "win_size": 21,
-        "pyramid_levels": 3,
+        "win_size": 41,
+        "pyramid_levels": 5,
         "preview_path": "preview_2p.mp4"
       }
     },

@@ -208,6 +208,7 @@ NODE_DEFINITIONS = [
             NodeParam("operation", "choice", "comp_on_white",
                       choices=["comp_on_white", "comp_on_black", "refine_alpha",
                                "divide_alpha", "unpremult_on_white"]),
+            NodeParam("trim", "bool", False),
             NodeParam("gamma", "float", 2.2, min=1.0, max=4.0),
             NodeParam("contrast", "float", 60.0, min=1.0, max=200.0),
             NodeParam("threshold", "float", 0.0015, min=0.0, max=0.1),
@@ -2661,6 +2662,7 @@ def handle_gamma(inputs: dict, params: dict, executor) -> dict:
 def handle_post_process(inputs: dict, params: dict, executor) -> dict:
     """Apply post-processing operation to image + alpha."""
     from vdg.postprocess.operations import apply_operation, get_operations
+    import numpy as np
 
     image = inputs.get('image_in')
     if image is None:
@@ -2692,6 +2694,33 @@ def handle_post_process(inputs: dict, params: dict, executor) -> dict:
     executor._log(f"  Applying {operation}")
     result = apply_operation(operation, image, alpha, **op_params)
     executor._log(f"  Output: {result.shape[1]}x{result.shape[0]}, dtype={result.dtype}")
+
+    # Apply trim if enabled
+    if params.get('trim', False):
+        # Normalize alpha to find content
+        if alpha.dtype == np.uint16:
+            alpha_norm = alpha.astype(np.float32) / 65535.0
+        else:
+            alpha_norm = alpha.astype(np.float32) / 255.0
+
+        if alpha_norm.ndim == 3:
+            alpha_1ch = alpha_norm[:, :, 0]
+        else:
+            alpha_1ch = alpha_norm
+
+        # Find bounding box of non-black alpha
+        content_mask = alpha_1ch > 0.001
+        rows_with_content = np.any(content_mask, axis=1)
+        cols_with_content = np.any(content_mask, axis=0)
+
+        row_indices = np.where(rows_with_content)[0]
+        col_indices = np.where(cols_with_content)[0]
+
+        if len(row_indices) > 0 and len(col_indices) > 0:
+            min_y, max_y = row_indices[0], row_indices[-1] + 1
+            min_x, max_x = col_indices[0], col_indices[-1] + 1
+            result = result[min_y:max_y, min_x:max_x].copy()
+            executor._log(f"  Trimmed to: {result.shape[1]}x{result.shape[0]}")
 
     return {'image_out': result}
 

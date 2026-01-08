@@ -1,0 +1,66 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "image_input",
+      "x": 208,
+      "y": 159,
+      "params": {
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/20241210_beachSmokeSurfers_12102024151521026_trk0102_umavg.png"
+      }
+    },
+    {
+      "id": "n2",
+      "type": "image_input",
+      "x": 216,
+      "y": 289,
+      "params": {
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/20241210_beachSmokeSurfers_12102024151521026_trk0102_umavg_alpha.png"
+      }
+    },
+    {
+      "id": "n3",
+      "type": "post_process",
+      "x": 446,
+      "y": 197,
+      "params": {
+        "operation": "divide_alpha",
+        "gamma": 2.2,
+        "contrast": 60,
+        "threshold": 0.0015,
+        "blur_size": 5,
+        "power": 8
+      }
+    },
+    {
+      "id": "n4",
+      "type": "image_output",
+      "x": 641,
+      "y": 232,
+      "params": {
+        "filepath": "output.png",
+        "bit_depth": "16"
+      }
+    }
+  ],
+  "conns": [
+    {
+      "sn": "n1",
+      "sp": "image_out",
+      "tn": "n3",
+      "tp": "image_in"
+    },
+    {
+      "sn": "n2",
+      "sp": "image_out",
+      "tn": "n3",
+      "tp": "alpha_in"
+    },
+    {
+      "sn": "n3",
+      "sp": "image_out",
+      "tn": "n4",
+      "tp": "image_in"
+    }
+  ]
+}
