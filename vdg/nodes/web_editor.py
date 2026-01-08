@@ -61,12 +61,21 @@ NODE_DEFINITIONS = [
     NodeDefinition(
         id="video_input", title="Video Input", category="Input",
         inputs=[],
-        outputs=[NodePort("video", "video"), NodePort("props", "props")],
+        outputs=[NodePort("video_out", "video"), NodePort("props", "props")],
         params=[
             NodeParam("filepath", "file", ""),
             NodeParam("first_frame", "int", 1, min=1),
             NodeParam("last_frame", "int", -1),
             NodeParam("use_hardware", "bool", False),
+        ],
+        color="#4CAF50",
+    ),
+    NodeDefinition(
+        id="image_input", title="Image Input", category="Input",
+        inputs=[],
+        outputs=[NodePort("image_out", "image")],
+        params=[
+            NodeParam("filepath", "file", ""),
         ],
         color="#4CAF50",
     ),
@@ -79,7 +88,7 @@ NODE_DEFINITIONS = [
     ),
     NodeDefinition(
         id="roi", title="ROI", category="Input",
-        inputs=[NodePort("video", "video", optional=True)],
+        inputs=[NodePort("video_in", "video", optional=True)],
         outputs=[NodePort("roi", "roi")],
         params=[
             NodeParam("pick_roi", "button", "Pick ROI"),
@@ -90,7 +99,7 @@ NODE_DEFINITIONS = [
     ),
     NodeDefinition(
         id="feature_tracker", title="Feature Tracker", category="Tracking",
-        inputs=[NodePort("video", "video"), NodePort("roi", "roi", optional=True)],
+        inputs=[NodePort("video_in", "video"), NodePort("roi", "roi", optional=True)],
         outputs=[NodePort("points", "points"), NodePort("track_data", "track_data")],
         params=[
             NodeParam("num_features", "int", 30, min=1, max=200),
@@ -104,7 +113,7 @@ NODE_DEFINITIONS = [
     NodeDefinition(
         id="feature_tracker_2p", title="Feature Tracker 2P", category="Tracking",
         inputs=[
-            NodePort("video", "video"),
+            NodePort("video_in", "video"),
             NodePort("roi1", "roi", optional=True),
             NodePort("roi2", "roi", optional=True),
         ],
@@ -150,8 +159,8 @@ NODE_DEFINITIONS = [
     ),
     NodeDefinition(
         id="frame_average", title="Frame Average", category="Processing",
-        inputs=[NodePort("video", "video"), NodePort("mask", "video", optional=True)],
-        outputs=[NodePort("image", "image"), NodePort("alpha", "image")],
+        inputs=[NodePort("video_in", "video"), NodePort("mask_in", "video", optional=True)],
+        outputs=[NodePort("image_out", "image"), NodePort("alpha_out", "image")],
         params=[
             NodeParam("comp_mode", "choice", "on_black", choices=["on_black", "on_white", "unpremult"]),
             NodeParam("brightness", "float", 1.0, min=0.0, max=4.0),
@@ -160,8 +169,8 @@ NODE_DEFINITIONS = [
     ),
     NodeDefinition(
         id="clahe", title="CLAHE", category="Processing",
-        inputs=[NodePort("image", "image")],
-        outputs=[NodePort("image", "image")],
+        inputs=[NodePort("image_in", "image")],
+        outputs=[NodePort("image_out", "image")],
         params=[
             NodeParam("clip_limit", "float", 40.0, min=1.0, max=100.0),
             NodeParam("grid_size", "int", 8, min=2, max=32),
@@ -187,8 +196,29 @@ NODE_DEFINITIONS = [
         color="#FF9800",
     ),
     NodeDefinition(
+        id="post_process", title="Post Process", category="Processing",
+        inputs=[
+            NodePort("image_in", "image"),
+            NodePort("alpha_in", "image"),
+        ],
+        outputs=[
+            NodePort("image_out", "image"),
+        ],
+        params=[
+            NodeParam("operation", "choice", "comp_on_white",
+                      choices=["comp_on_white", "comp_on_black", "refine_alpha",
+                               "divide_alpha", "unpremult_on_white"]),
+            NodeParam("gamma", "float", 2.2, min=1.0, max=4.0),
+            NodeParam("contrast", "float", 60.0, min=1.0, max=200.0),
+            NodeParam("threshold", "float", 0.0015, min=0.0, max=0.1),
+            NodeParam("blur_size", "float", 5.0, min=0.0, max=50.0),
+            NodeParam("power", "float", 8.0, min=0.1, max=20.0),
+        ],
+        color="#FF9800",
+    ),
+    NodeDefinition(
         id="video_output", title="Video Output", category="Output",
-        inputs=[NodePort("video", "video"), NodePort("props", "props")],
+        inputs=[NodePort("video_in", "video"), NodePort("props", "props")],
         outputs=[],
         params=[
             NodeParam("filepath", "string", "output.mp4"),
@@ -199,7 +229,7 @@ NODE_DEFINITIONS = [
     ),
     NodeDefinition(
         id="image_output", title="Image Output", category="Output",
-        inputs=[NodePort("image", "image")],
+        inputs=[NodePort("image_in", "image")],
         outputs=[],
         params=[
             NodeParam("filepath", "string", "output.png"),
@@ -529,7 +559,7 @@ function pickROI(nodeId) {
     if (!roiNode) { alert('Node not found'); return; }
 
     // Find connected video input
-    const conn = conns.find(c => c.tn === nodeId && c.tp === 'video');
+    const conn = conns.find(c => c.tn === nodeId && c.tp === 'video_in');
     if (!conn) { alert('Connect a video input to the ROI node first'); return; }
 
     const srcNode = nodes.find(n => n.id === conn.sn);
@@ -941,7 +971,7 @@ class GraphExecutor:
 
         # Store video reference for non-streaming nodes that might need it
         self.outputs[chain[0]] = {
-            'video': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props, 'use_hardware': use_hardware},
+            'video_out': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props, 'use_hardware': use_hardware},
             'props': props
         }
 
@@ -1080,7 +1110,7 @@ class GraphExecutor:
 
                 elif ntype == 'frame_average':
                     result, alpha = self._finalize_frame_average(state, params)
-                    self.outputs[nid] = {'image': result, 'alpha': alpha}
+                    self.outputs[nid] = {'image_out': result, 'alpha_out': alpha}
                     self._log(f"  ✓ frame_average: {result.shape[1]}x{result.shape[0]} output")
 
                 elif ntype == 'video_output':
@@ -1520,7 +1550,7 @@ class GraphExecutor:
                     last_frame = params.get('last_frame', -1)
                     last_frame = None if last_frame == -1 else last_frame
                     self.outputs[chain[0]] = {
-                        'video': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
+                        'video_out': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
                         'props': props
                     }
                     video_inputs_loaded.add(chain[0])
@@ -1657,7 +1687,7 @@ def handle_video_input(inputs: dict, params: dict, executor) -> dict:
 
     # Return video reference - frames will be loaded on-demand by nodes that need them
     return {
-        'video': {
+        'video_out': {
             'filepath': filepath,
             'first_frame': first,
             'last_frame': last,
@@ -1666,6 +1696,39 @@ def handle_video_input(inputs: dict, params: dict, executor) -> dict:
         },
         'props': props
     }
+
+
+def handle_image_input(inputs: dict, params: dict, executor) -> dict:
+    """Load an image file."""
+    import cv2
+    from pathlib import Path
+
+    filepath = params.get('filepath', '').strip()
+    if not filepath:
+        raise ValueError("No image file specified")
+
+    path = Path(filepath)
+    if not path.exists():
+        raise ValueError(f"Image file not found: {filepath}")
+
+    # Load image with OpenCV (supports PNG, TIFF, EXR with 16-bit)
+    # Use IMREAD_UNCHANGED to preserve bit depth and channels
+    image = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
+
+    if image is None:
+        raise ValueError(f"Failed to load image: {filepath}")
+
+    # Convert grayscale to RGB if needed
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    elif image.shape[2] == 4:
+        # Has alpha - strip it (just load RGB)
+        image = image[:, :, :3]
+
+    executor._log(f"  Loaded: {filepath}")
+    executor._log(f"  Size: {image.shape[1]}x{image.shape[0]}, dtype={image.dtype}")
+
+    return {'image_out': image}
 
 
 def handle_roi(inputs: dict, params: dict, executor) -> dict:
@@ -1683,7 +1746,9 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
     import numpy as np
     import cv2
 
-    video_data = inputs.get('video')
+    video_data = inputs.get('video_in')
+    if video_data is None:
+        video_data = inputs.get('video_out')
     roi = inputs.get('roi')
 
     if video_data is None:
@@ -1795,7 +1860,9 @@ def handle_feature_tracker_2p(inputs: dict, params: dict, executor) -> dict:
     import numpy as np
     import cv2
 
-    video_data = inputs.get('video')
+    video_data = inputs.get('video_in')
+    if video_data is None:
+        video_data = inputs.get('video_out')
     roi1 = inputs.get('roi1')
     roi2 = inputs.get('roi2')
 
@@ -2245,8 +2312,16 @@ def handle_frame_average(inputs: dict, params: dict, executor) -> dict:
     from vdg.core.video import VideoReader
     import numpy as np
 
-    video_data = inputs.get('video', {})
-    masks = inputs.get('mask', [])
+    video_data = inputs.get('video_in')
+    if video_data is None:
+        video_data = inputs.get('video_out')
+    if video_data is None:
+        video_data = {}
+    masks = inputs.get('mask_in')
+    if masks is None:
+        masks = inputs.get('mask_out')
+    if masks is None:
+        masks = []
 
     comp_mode = params.get('comp_mode', 'on_black')
     brightness = params.get('brightness', 1.0)
@@ -2347,7 +2422,7 @@ def handle_frame_average(inputs: dict, params: dict, executor) -> dict:
 
     executor._log(f"  Output: {result.shape[1]}x{result.shape[0]}")
 
-    return {'image': result, 'alpha': alpha}
+    return {'image_out': result, 'alpha_out': alpha}
 
 
 def handle_image_output(inputs: dict, params: dict, executor) -> dict:
@@ -2356,7 +2431,9 @@ def handle_image_output(inputs: dict, params: dict, executor) -> dict:
     import numpy as np
     from pathlib import Path
 
-    image = inputs.get('image')
+    image = inputs.get('image_in')
+    if image is None:
+        image = inputs.get('image_out')
     if image is None:
         raise ValueError("No image to save")
 
@@ -2390,7 +2467,11 @@ def handle_video_output(inputs: dict, params: dict, executor) -> dict:
     """Save video to file."""
     import cv2
 
-    frames = inputs.get('video', [])
+    frames = inputs.get('video_in')
+    if frames is None:
+        frames = inputs.get('video_out')
+    if frames is None:
+        frames = []
     props = inputs.get('props')
 
     # Handle different input formats
@@ -2485,7 +2566,9 @@ def handle_clahe(inputs: dict, params: dict, executor) -> dict:
     """Apply CLAHE contrast enhancement."""
     import cv2
 
-    image = inputs.get('image')
+    image = inputs.get('image_in')
+    if image is None:
+        image = inputs.get('image_out')
     if image is None:
         raise ValueError("No image input")
 
@@ -2501,7 +2584,7 @@ def handle_clahe(inputs: dict, params: dict, executor) -> dict:
 
     executor._log(f"  Applied CLAHE (clip={clip}, grid={grid})")
 
-    return {'image': result}
+    return {'image_out': result}
 
 
 def handle_gamma(inputs: dict, params: dict, executor) -> dict:
@@ -2575,6 +2658,44 @@ def handle_gamma(inputs: dict, params: dict, executor) -> dict:
         raise ValueError("Unsupported input format")
 
 
+def handle_post_process(inputs: dict, params: dict, executor) -> dict:
+    """Apply post-processing operation to image + alpha."""
+    from vdg.postprocess.operations import apply_operation, get_operations
+
+    image = inputs.get('image_in')
+    if image is None:
+        image = inputs.get('image_out')
+    alpha = inputs.get('alpha_in')
+    if alpha is None:
+        alpha = inputs.get('alpha_out')
+
+    if image is None:
+        raise ValueError("No image input provided")
+    if alpha is None:
+        raise ValueError("No alpha input provided")
+
+    operation = params.get('operation', 'comp_on_white')
+    available = get_operations()
+
+    if operation not in available:
+        raise ValueError(f"Unknown operation: {operation}. Available: {available}")
+
+    # Collect additional params for the operation
+    op_params = {
+        'gamma': params.get('gamma', 2.2),
+        'contrast': params.get('contrast', 60.0),
+        'threshold': params.get('threshold', 0.0015),
+        'blur_size': params.get('blur_size', 5.0),
+        'power': params.get('power', 8.0),
+    }
+
+    executor._log(f"  Applying {operation}")
+    result = apply_operation(operation, image, alpha, **op_params)
+    executor._log(f"  Output: {result.shape[1]}x{result.shape[0]}, dtype={result.dtype}")
+
+    return {'image_out': result}
+
+
 def handle_gaussian_filter(inputs: dict, params: dict, executor) -> dict:
     """Apply Gaussian smoothing to track data."""
     track_data = inputs.get('track_data', {})
@@ -2607,6 +2728,7 @@ def handle_gaussian_filter(inputs: dict, params: dict, executor) -> dict:
 # Register all handlers
 NODE_HANDLERS = {
     'video_input': handle_video_input,
+    'image_input': handle_image_input,
     'roi': handle_roi,
     'feature_tracker': handle_feature_tracker,
     'feature_tracker_2p': handle_feature_tracker_2p,
@@ -2619,6 +2741,7 @@ NODE_HANDLERS = {
     'track_input': handle_track_input,
     'clahe': handle_clahe,
     'gamma': handle_gamma,
+    'post_process': handle_post_process,
     'gaussian_filter': handle_gaussian_filter,
     'color_correction': lambda i, p, e: i,  # TODO
 }

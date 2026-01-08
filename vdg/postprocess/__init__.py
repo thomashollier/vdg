@@ -1,22 +1,44 @@
 """
-Post-processing module - Image manipulation using OpenImageIO.
+Post-processing module - Image manipulation operations.
 
 This module provides:
+- Operations registry: Modular post-processing functions
 - Compositor: Alpha channel manipulation and compositing
-- Trimmer: Auto-trim and scale images
 - Filters: Sigmoid contrast, blur, power adjustments
 
-Note: Requires OpenImageIO to be installed.
+Available operations:
+- comp_on_white: Composite image over white background
+- comp_on_black: Composite image over black background
+- gamma_alpha: Apply inverse gamma to alpha then composite
+- alpha_contrast: Sigmoid contrast + blur + power on alpha
+- multiply_alpha: Multiply RGB by alpha (premultiply)
+- divide_alpha: Divide RGB by alpha (unpremultiply)
+
+To add new operations, edit vdg/postprocess/operations.py and use
+the @register_operation decorator.
 """
 
-# Note: These will be implemented as needed
-# from vdg.postprocess.composite import proc00, procGamma, procOnWhite
-# from vdg.postprocess.trim import trim, trim_and_scale
+from vdg.postprocess.operations import (
+    register_operation,
+    get_operations,
+    get_operation,
+    apply_operation,
+    # Built-in operations
+    comp_on_white,
+    comp_on_black,
+    refine_alpha,
+    divide_alpha,
+    unpremult_on_white,
+)
 
 __all__ = [
-    # "proc00",
-    # "procGamma", 
-    # "procOnWhite",
-    # "trim",
-    # "trim_and_scale",
+    "register_operation",
+    "get_operations",
+    "get_operation",
+    "apply_operation",
+    "comp_on_white",
+    "comp_on_black",
+    "refine_alpha",
+    "divide_alpha",
+    "unpremult_on_white",
 ]
