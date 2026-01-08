@@ -1,0 +1,192 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "video_input",
+      "x": 223,
+      "y": 179,
+      "params": {
+        "filepath": "/Users/thomas/Documents/Slitscans/20241210_beachSmokeSurfers/12102024150054560.mov",
+        "first_frame": 1550,
+        "last_frame": -1,
+        "use_hardware": false
+      }
+    },
+    {
+      "id": "n2",
+      "type": "roi",
+      "x": 391,
+      "y": 22,
+      "params": {
+        "pick_roi": "Pick ROI",
+        "x": 1157,
+        "y": 513,
+        "width": 80,
+        "height": 173
+      }
+    },
+    {
+      "id": "n3",
+      "type": "feature_tracker",
+      "x": 603,
+      "y": 20,
+      "params": {
+        "num_features": 30,
+        "enforce_bbox": true,
+        "win_size": 31,
+        "pyramid_levels": 5,
+        "preview_path": "preview.mp4"
+      }
+    },
+    {
+      "id": "n4",
+      "type": "track_output",
+      "x": 826,
+      "y": 70,
+      "params": {
+        "filepath": "track.crv",
+        "track_type": "1",
+        "center_mode": "centroid"
+      }
+    },
+    {
+      "id": "n6",
+      "type": "stabilizer",
+      "x": 662,
+      "y": 316,
+      "params": {
+        "mode": "two_point",
+        "ref_frame": -1,
+        "swap_xy": false,
+        "x_flip": false,
+        "y_flip": false
+      }
+    },
+    {
+      "id": "n8",
+      "type": "apply_transform",
+      "x": 983,
+      "y": 350,
+      "params": {
+        "x_pad": 1000,
+        "y_pad": 1000,
+        "x_offset": 0,
+        "y_offset": 0
+      }
+    },
+    {
+      "id": "n9",
+      "type": "frame_average",
+      "x": 1153,
+      "y": 408,
+      "params": {
+        "comp_mode": "on_black",
+        "brightness": 1
+      }
+    },
+    {
+      "id": "n11",
+      "type": "image_output",
+      "x": 1510,
+      "y": 475,
+      "params": {
+        "filepath": "output.png",
+        "bit_depth": "16"
+      }
+    },
+    {
+      "id": "n12",
+      "type": "gamma",
+      "x": 826,
+      "y": 234,
+      "params": {
+        "mode": "to_linear",
+        "gamma": 2.2
+      }
+    },
+    {
+      "id": "n13",
+      "type": "gamma",
+      "x": 1328,
+      "y": 417,
+      "params": {
+        "mode": "to_srgb",
+        "gamma": 2.2
+      }
+    }
+  ],
+  "conns": [
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n2",
+      "tp": "video"
+    },
+    {
+      "sn": "n2",
+      "sp": "roi",
+      "tn": "n3",
+      "tp": "roi"
+    },
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n3",
+      "tp": "video"
+    },
+    {
+      "sn": "n3",
+      "sp": "track_data",
+      "tn": "n4",
+      "tp": "track_data"
+    },
+    {
+      "sn": "n1",
+      "sp": "props",
+      "tn": "n6",
+      "tp": "props"
+    },
+    {
+      "sn": "n6",
+      "sp": "transforms",
+      "tn": "n8",
+      "tp": "transforms"
+    },
+    {
+      "sn": "n8",
+      "sp": "video_out",
+      "tn": "n9",
+      "tp": "video"
+    },
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n12",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n12",
+      "sp": "video_out",
+      "tn": "n8",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n13",
+      "sp": "image_out",
+      "tn": "n11",
+      "tp": "image"
+    },
+    {
+      "sn": "n3",
+      "sp": "track_data",
+      "tn": "n6",
+      "tp": "track1"
+    },
+    {
+      "sn": "n9",
+      "sp": "image",
+      "tn": "n13",
+      "tp": "image_in"
+    }
+  ]
+}

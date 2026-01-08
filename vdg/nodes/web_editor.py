@@ -79,9 +79,10 @@ NODE_DEFINITIONS = [
     ),
     NodeDefinition(
         id="roi", title="ROI", category="Input",
-        inputs=[],
+        inputs=[NodePort("video", "video", optional=True)],
         outputs=[NodePort("roi", "roi")],
         params=[
+            NodeParam("pick_roi", "button", "Pick ROI"),
             NodeParam("x", "int", 0), NodeParam("y", "int", 0),
             NodeParam("width", "int", 100), NodeParam("height", "int", 100),
         ],
@@ -94,6 +95,9 @@ NODE_DEFINITIONS = [
         params=[
             NodeParam("num_features", "int", 30, min=1, max=200),
             NodeParam("enforce_bbox", "bool", True),
+            NodeParam("win_size", "int", 21, min=11, max=101),
+            NodeParam("pyramid_levels", "int", 3, min=0, max=6),
+            NodeParam("preview_path", "string", ""),
         ],
         color="#2196F3",
     ),
@@ -235,13 +239,14 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .node-btn { display: block; width: 100%; padding: 6px 10px; margin: 3px 0; background: #252545; color: #fff; border: 1px solid #333; border-radius: 4px; cursor: grab; text-align: left; font-size: 12px; }
         .node-btn:hover { background: #2d2d5a; border-color: #4fc3f7; }
         .canvas-area { flex: 1; position: relative; overflow: hidden; }
-        #canvas { position: absolute; width: 5000px; height: 5000px; background-image: radial-gradient(#333 1px, transparent 1px); background-size: 20px 20px; }
-        #svg-layer { position: absolute; width: 5000px; height: 5000px; pointer-events: none; }
+        #canvas { position: absolute; width: 5000px; height: 5000px; background-image: radial-gradient(#333 1px, transparent 1px); background-size: 20px 20px; z-index: 1; }
+        #svg-layer { position: absolute; width: 5000px; height: 5000px; z-index: 2; pointer-events: none; }
+        #svg-layer path { pointer-events: stroke; }
         .toolbar { position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; z-index: 100; }
         .toolbar button { padding: 8px 14px; background: #4CAF50; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
         .toolbar button:hover { filter: brightness(1.1); }
         .toolbar button.sec { background: #555; }
-        .node { position: absolute; min-width: 140px; background: #252545; border: 2px solid #444; border-radius: 6px; cursor: move; user-select: none; font-size: 11px; }
+        .node { position: absolute; min-width: 140px; background: #252545; border: 2px solid #444; border-radius: 6px; cursor: move; user-select: none; font-size: 11px; z-index: 3; }
         .node.selected { border-color: #4fc3f7; box-shadow: 0 0 15px rgba(79,195,247,0.3); }
         .node-hdr { padding: 6px 10px; border-radius: 4px 4px 0 0; font-weight: 600; font-size: 11px; }
         .node-body { padding: 6px 10px; }
@@ -263,7 +268,21 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .del-btn { margin-top: 16px; width: 100%; padding: 8px; background: #c0392b; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; }
         .status { position: absolute; bottom: 10px; left: 220px; background: rgba(22,33,62,0.9); padding: 6px 12px; border-radius: 4px; font-size: 11px; color: #888; }
         .conn { stroke: #4fc3f7; stroke-width: 2; fill: none; }
+        .conn.conn-hover { stroke: #ff5722; stroke-width: 3; }
         .conn-temp { stroke: #4fc3f7; stroke-width: 2; fill: none; stroke-dasharray: 5,5; }
+        .prop button.pick-btn { width: 100%; padding: 8px; background: #4fc3f7; color: #000; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; }
+        .prop button.pick-btn:hover { filter: brightness(1.1); }
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-overlay.active { display: flex; }
+        .modal { background: #1a1a2e; border: 2px solid #4fc3f7; border-radius: 8px; padding: 16px; max-width: 90vw; max-height: 90vh; }
+        .modal h3 { margin-bottom: 12px; color: #4fc3f7; font-size: 14px; }
+        .modal-canvas-wrap { position: relative; cursor: crosshair; display: inline-block; }
+        .modal-canvas-wrap img { display: block; max-width: 80vw; max-height: 70vh; }
+        .modal-canvas-wrap canvas { position: absolute; top: 0; left: 0; pointer-events: auto; }
+        .modal-btns { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+        .modal-btns button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .modal-btns .apply { background: #4CAF50; color: #fff; }
+        .modal-btns .cancel { background: #555; color: #fff; }
     </style>
 </head>
 <body>
@@ -281,6 +300,19 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             <div class="status" id="status">Drag nodes to canvas</div>
         </div>
         <div class="props" id="props"><div class="props-empty">Select a node</div></div>
+    </div>
+    <div class="modal-overlay" id="roi-modal">
+        <div class="modal">
+            <h3>Draw ROI - Click and drag to select region</h3>
+            <div class="modal-canvas-wrap" id="roi-canvas-wrap">
+                <img id="roi-img">
+                <canvas id="roi-canvas"></canvas>
+            </div>
+            <div class="modal-btns">
+                <button class="cancel" onclick="closeROIModal()">Cancel</button>
+                <button class="apply" onclick="applyROI()">Apply</button>
+            </div>
+        </div>
     </div>
 <script>
 const DEFS = ''' + json.dumps(get_nodes_json()) + ''';
@@ -309,7 +341,7 @@ function init() {
         if (t) addNode(t, e.clientX - area.getBoundingClientRect().left - pan.x, e.clientY - area.getBoundingClientRect().top - pan.y);
     };
     area.onmousedown = e => {
-        if (e.target === area || e.target.id === 'canvas' || e.target.id === 'svg-layer') {
+        if (e.target === area || e.target.id === 'canvas') {
             panning = true; panStart = {x: e.clientX - pan.x, y: e.clientY - pan.y}; desel();
         }
     };
@@ -366,17 +398,21 @@ function showProps(n) {
     const d = DEFS.find(dd => dd.id === n.type);
     let h = '<h3>' + d.title + '</h3>';
     d.params.forEach(p => {
-        h += '<div class="prop"><label>' + p.name + '</label>';
-        if (p.choices) {
-            h += '<select data-p="' + p.name + '">' + p.choices.map(c => '<option' + (n.params[p.name] === c ? ' selected' : '') + '>' + c + '</option>').join('') + '</select>';
-        } else if (p.type === 'bool') {
-            h += '<input type="checkbox" data-p="' + p.name + '"' + (n.params[p.name] ? ' checked' : '') + '>';
-        } else if (p.type === 'int' || p.type === 'float') {
-            h += '<input type="number" data-p="' + p.name + '" value="' + (n.params[p.name] ?? '') + '" step="' + (p.type === 'float' ? '0.1' : '1') + '"' + (p.min != null ? ' min="' + p.min + '"' : '') + (p.max != null ? ' max="' + p.max + '"' : '') + '>';
+        if (p.type === 'button') {
+            h += '<div class="prop"><button class="pick-btn" onclick="pickROI(\\'' + n.id + '\\')">' + p.default + '</button></div>';
         } else {
-            h += '<input type="text" data-p="' + p.name + '" value="' + (n.params[p.name] || '') + '">';
+            h += '<div class="prop"><label>' + p.name + '</label>';
+            if (p.choices) {
+                h += '<select data-p="' + p.name + '">' + p.choices.map(c => '<option' + (n.params[p.name] === c ? ' selected' : '') + '>' + c + '</option>').join('') + '</select>';
+            } else if (p.type === 'bool') {
+                h += '<input type="checkbox" data-p="' + p.name + '"' + (n.params[p.name] ? ' checked' : '') + '>';
+            } else if (p.type === 'int' || p.type === 'float') {
+                h += '<input type="number" data-p="' + p.name + '" value="' + (n.params[p.name] ?? '') + '" step="' + (p.type === 'float' ? '0.1' : '1') + '"' + (p.min != null ? ' min="' + p.min + '"' : '') + (p.max != null ? ' max="' + p.max + '"' : '') + '>';
+            } else {
+                h += '<input type="text" data-p="' + p.name + '" value="' + (n.params[p.name] || '') + '">';
+            }
+            h += '</div>';
         }
-        h += '</div>';
     });
     h += '<button class="del-btn" onclick="delNode()">Delete Node</button>';
     document.getElementById('props').innerHTML = h;
@@ -420,22 +456,187 @@ function remTemp() { document.querySelector('.conn-temp')?.remove(); }
 
 function drawConns() {
     const svg = document.getElementById('svg-layer'), ar = document.getElementById('canvas-area').getBoundingClientRect();
-    svg.querySelectorAll('.conn').forEach(e => e.remove());
-    conns.forEach(c => {
+    svg.querySelectorAll('path').forEach(e => e.remove());
+    conns.forEach((c, idx) => {
         const d1 = document.querySelector('[data-n="' + c.sn + '"][data-p="' + c.sp + '"]');
         const d2 = document.querySelector('[data-n="' + c.tn + '"][data-p="' + c.tp + '"]');
         if (!d1 || !d2) return;
         const r1 = d1.getBoundingClientRect(), r2 = d2.getBoundingClientRect();
         const x1 = r1.left + 4 - ar.left - pan.x, y1 = r1.top + 4 - ar.top - pan.y;
         const x2 = r2.left + 4 - ar.left - pan.x, y2 = r2.top + 4 - ar.top - pan.y;
-        const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        p.classList.add('conn');
-        p.setAttribute('d', 'M' + x1 + ' ' + y1 + ' C' + (x1+60) + ' ' + y1 + ',' + (x2-60) + ' ' + y2 + ',' + x2 + ' ' + y2);
-        svg.appendChild(p);
+        const pathD = 'M' + x1 + ' ' + y1 + ' C' + (x1+60) + ' ' + y1 + ',' + (x2-60) + ' ' + y2 + ',' + x2 + ' ' + y2;
+
+        // Visible path
+        const visPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        visPath.classList.add('conn');
+        visPath.setAttribute('d', pathD);
+        visPath.style.pointerEvents = 'none';
+
+        // Invisible wide path for hit detection
+        const hitPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        hitPath.setAttribute('d', pathD);
+        hitPath.setAttribute('stroke', 'rgba(0,0,0,0.001)');
+        hitPath.setAttribute('stroke-width', '20');
+        hitPath.setAttribute('fill', 'none');
+        hitPath.style.pointerEvents = 'auto';
+        hitPath.style.cursor = 'pointer';
+        hitPath.dataset.idx = idx;
+
+        hitPath.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); deleteConn(idx); };
+        hitPath.onclick = e => { e.stopPropagation(); if (e.shiftKey || e.metaKey) deleteConn(idx); };
+        hitPath.onmouseenter = () => visPath.classList.add('conn-hover');
+        hitPath.onmouseleave = () => visPath.classList.remove('conn-hover');
+
+        svg.appendChild(visPath);
+        svg.appendChild(hitPath);
     });
 }
 
+function deleteConn(idx) {
+    conns.splice(idx, 1);
+    drawConns();
+    status('Connection deleted');
+}
+
 function status(m) { document.getElementById('status').textContent = m; }
+
+// ROI Picker
+let roiNode = null, roiRect = null, roiDrawing = false, roiStart = null;
+let origW = 0, origH = 0;
+
+function pickROI(nodeId) {
+    roiNode = nodes.find(n => n.id === nodeId);
+    if (!roiNode) { alert('Node not found'); return; }
+
+    // Find connected video input
+    const conn = conns.find(c => c.tn === nodeId && c.tp === 'video');
+    if (!conn) { alert('Connect a video input to the ROI node first'); return; }
+
+    const srcNode = nodes.find(n => n.id === conn.sn);
+    if (!srcNode || srcNode.type !== 'video_input') { alert('Source must be a video_input node'); return; }
+
+    const filepath = srcNode.params.filepath;
+    if (!filepath) { alert('Video input has no filepath set'); return; }
+
+    const firstFrame = srcNode.params.first_frame || 1;
+
+    // Fetch frame
+    const img = document.getElementById('roi-img');
+    const canvas = document.getElementById('roi-canvas');
+
+    status('Loading frame ' + firstFrame + '...');
+    img.onload = () => {
+        origW = parseInt(img.getAttribute('data-orig-w')) || img.naturalWidth;
+        origH = parseInt(img.getAttribute('data-orig-h')) || img.naturalHeight;
+        roiRect = null;
+
+        // Show modal first, then set up canvas after layout
+        document.getElementById('roi-modal').classList.add('active');
+
+        requestAnimationFrame(() => {
+            // Now the image is laid out, get its display size
+            const displayW = img.offsetWidth || img.clientWidth || img.naturalWidth;
+            const displayH = img.offsetHeight || img.clientHeight || img.naturalHeight;
+            canvas.width = displayW;
+            canvas.height = displayH;
+            canvas.style.width = displayW + 'px';
+            canvas.style.height = displayH + 'px';
+            drawROIRect();
+            status('Draw a rectangle on frame ' + firstFrame);
+        });
+    };
+    img.onerror = () => { alert('Failed to load frame'); status('Error loading frame'); };
+
+    fetch('/api/frame?filepath=' + encodeURIComponent(filepath) + '&frame=' + firstFrame)
+        .then(r => {
+            origW = parseInt(r.headers.get('X-Original-Width')) || 0;
+            origH = parseInt(r.headers.get('X-Original-Height')) || 0;
+            return r.blob();
+        })
+        .then(b => {
+            img.setAttribute('data-orig-w', origW);
+            img.setAttribute('data-orig-h', origH);
+            img.src = URL.createObjectURL(b);
+        })
+        .catch(e => { alert('Failed to fetch frame: ' + e.message); });
+}
+
+function closeROIModal() {
+    document.getElementById('roi-modal').classList.remove('active');
+    roiNode = null;
+    roiRect = null;
+}
+
+function applyROI() {
+    if (!roiNode || !roiRect) { alert('Draw a rectangle first'); return; }
+
+    const img = document.getElementById('roi-img');
+    const scaleX = origW / img.offsetWidth;
+    const scaleY = origH / img.offsetHeight;
+
+    console.log('applyROI debug:', {
+        roiRect: roiRect,
+        origW: origW, origH: origH,
+        imgOffsetW: img.offsetWidth, imgOffsetH: img.offsetHeight,
+        scaleX: scaleX, scaleY: scaleY
+    });
+
+    const node = roiNode;  // Save reference before closing
+    node.params.x = Math.round(roiRect.x * scaleX);
+    node.params.y = Math.round(roiRect.y * scaleY);
+    node.params.width = Math.round(roiRect.w * scaleX);
+    node.params.height = Math.round(roiRect.h * scaleY);
+
+    console.log('Final params:', node.params);
+
+    closeROIModal();
+    showProps(node);
+    status('ROI set: ' + node.params.x + ',' + node.params.y + ' ' + node.params.width + 'x' + node.params.height);
+}
+
+function drawROIRect() {
+    const canvas = document.getElementById('roi-canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (roiRect) {
+        ctx.strokeStyle = '#4fc3f7';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.strokeRect(roiRect.x, roiRect.y, roiRect.w, roiRect.h);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(79, 195, 247, 0.1)';
+        ctx.fillRect(roiRect.x, roiRect.y, roiRect.w, roiRect.h);
+    }
+}
+
+// Canvas mouse events for ROI drawing
+document.addEventListener('DOMContentLoaded', () => {
+    const canvas = document.getElementById('roi-canvas');
+
+    canvas.onmousedown = e => {
+        const r = canvas.getBoundingClientRect();
+        roiStart = { x: e.clientX - r.left, y: e.clientY - r.top };
+        roiDrawing = true;
+        roiRect = { x: roiStart.x, y: roiStart.y, w: 0, h: 0 };
+    };
+
+    canvas.onmousemove = e => {
+        if (!roiDrawing) return;
+        const r = canvas.getBoundingClientRect();
+        const x = e.clientX - r.left, y = e.clientY - r.top;
+        roiRect = {
+            x: Math.min(roiStart.x, x),
+            y: Math.min(roiStart.y, y),
+            w: Math.abs(x - roiStart.x),
+            h: Math.abs(y - roiStart.y)
+        };
+        drawROIRect();
+    };
+
+    canvas.onmouseup = () => { roiDrawing = false; };
+    canvas.onmouseleave = () => { roiDrawing = false; };
+});
 
 async function execute() {
     status('Running...');
@@ -501,6 +702,48 @@ async def index():
 @app.get("/api/nodes")
 async def get_nodes():
     return get_nodes_json()
+
+
+@app.get("/api/frame")
+async def get_frame(filepath: str, frame: int = 1):
+    """Get a single frame from a video as JPEG."""
+    from fastapi.responses import Response
+    import cv2
+    from pathlib import Path
+
+    if not Path(filepath).exists():
+        return Response(content=b"File not found", status_code=404)
+
+    cap = cv2.VideoCapture(filepath)
+    if not cap.isOpened():
+        return Response(content=b"Cannot open video", status_code=400)
+
+    try:
+        # Seek to frame (0-indexed internally, but we use 1-indexed API)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame - 1)
+        ret, img = cap.read()
+        if not ret:
+            return Response(content=b"Cannot read frame", status_code=400)
+
+        # Get dimensions for response header
+        height, width = img.shape[:2]
+
+        # Resize if too large (max 1280px wide for preview)
+        max_width = 1280
+        if width > max_width:
+            scale = max_width / width
+            img = cv2.resize(img, (max_width, int(height * scale)))
+
+        # Encode as JPEG
+        _, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+        return Response(
+            content=jpeg.tobytes(),
+            media_type="image/jpeg",
+            headers={"X-Original-Width": str(width), "X-Original-Height": str(height)}
+        )
+    finally:
+        cap.release()
 
 
 @app.post("/api/execute")
@@ -583,43 +826,60 @@ class GraphExecutor:
 
         # Find video streaming chains
         # A chain starts at video_input and continues through streamable nodes
-        # until hitting a non-streamable node or end
+        # until hitting a non-streamable node or branching
         chains = []
 
         for nid, node in nodes.items():
             ntype = self._get_node_type(node)
 
-            # Start chain at video_input
+            # Start chains from video_input
             if ntype == 'video_input':
-                chain = [nid]
-                current = nid
+                # Find all video outputs from this video_input
+                video_outs = [
+                    (tgt, sp, tp) for tgt, sp, tp in outgoing[nid]
+                    if sp in ('video', 'video_out') and tp in ('video', 'video_in')
+                ]
 
-                while True:
-                    # Find video output connections
-                    video_outs = [
-                        (tgt, sp, tp) for tgt, sp, tp in outgoing[current]
-                        if sp in ('video', 'video_out') and tp in ('video', 'video_in')
-                    ]
+                # Trace each video output as a potential chain
+                for start_node, _, _ in video_outs:
+                    start_type = self._get_node_type(nodes[start_node])
 
-                    if len(video_outs) != 1:
-                        # Branching or end of chain
-                        break
+                    # Skip non-streamable starting nodes
+                    if start_type in self.NON_STREAMABLE_NODES:
+                        continue
+                    if start_type not in self.STREAMABLE_NODES:
+                        continue
 
-                    next_node, _, _ = video_outs[0]
-                    next_type = self._get_node_type(nodes[next_node])
+                    # Start a chain from video_input through this streamable node
+                    chain = [nid, start_node]
+                    current = start_node
 
-                    if next_type in self.NON_STREAMABLE_NODES:
-                        # Hit a barrier - stop chain here
-                        break
+                    while True:
+                        # Find video output connections from current node
+                        next_video_outs = [
+                            (tgt, sp, tp) for tgt, sp, tp in outgoing[current]
+                            if sp in ('video', 'video_out') and tp in ('video', 'video_in')
+                        ]
 
-                    if next_type in self.STREAMABLE_NODES:
-                        chain.append(next_node)
-                        current = next_node
-                    else:
-                        break
+                        if len(next_video_outs) != 1:
+                            # Branching or end of chain
+                            break
 
-                if len(chain) > 1:
-                    chains.append(chain)
+                        next_node, _, _ = next_video_outs[0]
+                        next_type = self._get_node_type(nodes[next_node])
+
+                        if next_type in self.NON_STREAMABLE_NODES:
+                            # Hit a barrier - stop chain here
+                            break
+
+                        if next_type in self.STREAMABLE_NODES:
+                            chain.append(next_node)
+                            current = next_node
+                        else:
+                            break
+
+                    if len(chain) > 1:
+                        chains.append(chain)
 
         return chains
 
@@ -765,6 +1025,10 @@ class GraphExecutor:
 
             try:
                 if ntype == 'feature_tracker':
+                    # Close preview video writer if it exists
+                    if state.get('preview_writer'):
+                        state['preview_writer'].release()
+                        self._log(f"  Preview video saved")
                     self.outputs[nid] = {
                         'track_data': state['track_data'],
                         'points': state.get('last_points'),
@@ -800,6 +1064,7 @@ class GraphExecutor:
     def _stream_feature_tracker(self, frame, data, state, params, inputs):
         """Process one frame through feature tracker."""
         from vdg.tracking import FeatureTracker
+        import cv2
 
         if state['tracker'] is None:
             roi = inputs.get('roi')
@@ -807,8 +1072,20 @@ class GraphExecutor:
                 num_features=params.get('num_features', 30),
                 initial_roi=roi,
                 enforce_bbox=params.get('enforce_bbox', True),
+                win_size=params.get('win_size', 21),
+                pyramid_levels=params.get('pyramid_levels', 3),
             )
             state['tracker'].initialize(frame)
+            state['initial_roi'] = roi
+
+            # Initialize preview video writer if path is set
+            preview_path = params.get('preview_path', '').strip()
+            if preview_path:
+                h, w = frame.shape[:2]
+                fps = data.get('props').fps if data.get('props') else 30
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                state['preview_writer'] = cv2.VideoWriter(preview_path, fourcc, fps, (w, h))
+                self._log(f"  Preview output: {preview_path}")
         else:
             state['tracker'].update(frame)
 
@@ -820,6 +1097,29 @@ class GraphExecutor:
 
         state['last_points'] = tracker.points
         state['frame_count'] += 1
+
+        # Write preview frame if enabled
+        if state.get('preview_writer'):
+            preview = frame.copy()
+            # Draw tracked points
+            if tracker.points is not None:
+                for pt in tracker.points.reshape(-1, 2):
+                    cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (0, 255, 0), -1)
+                # Draw centroid
+                pts = tracker.points.reshape(-1, 2)
+                cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
+                cv2.circle(preview, (cx, cy), 8, (0, 255, 255), 2)
+                cv2.drawMarker(preview, (cx, cy), (0, 255, 255), cv2.MARKER_CROSS, 16, 2)
+            # Draw current ROI/bbox
+            if tracker.current_roi:
+                rx, ry, rw, rh = [int(v) for v in tracker.current_roi]
+                cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (255, 0, 0), 2)
+            # Draw initial ROI
+            if state.get('initial_roi'):
+                rx, ry, rw, rh = [int(v) for v in state['initial_roi']]
+                cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (0, 0, 255), 1)
+            state['preview_writer'].write(preview)
+
         return frame, data
 
     def _stream_apply_transform(self, frame, data, state, params, inputs):
@@ -1052,24 +1352,33 @@ class GraphExecutor:
 
         # Find streaming chains
         streaming_chains = self._find_streaming_chains(nodes, edges)
-        streaming_nodes = set()
-        for chain in streaming_chains:
-            streaming_nodes.update(chain)
 
-        # Calculate dependencies for each chain
+        # Track which nodes belong to which chains (a node can be in multiple chains if it's the start)
+        node_to_chains = {}  # node_id -> list of chain indices
+        for i, chain in enumerate(streaming_chains):
+            for nid in chain:
+                if nid not in node_to_chains:
+                    node_to_chains[nid] = []
+                node_to_chains[nid].append(i)
+
+        # Calculate dependencies for each chain (by index)
         chain_deps = {}
-        for chain in streaming_chains:
-            chain_deps[chain[0]] = self._get_chain_dependencies(chain, nodes, edges)
+        for i, chain in enumerate(streaming_chains):
+            chain_deps[i] = self._get_chain_dependencies(chain, nodes, edges)
 
         self._log(f"Found {len(streaming_chains)} streaming chain(s)")
+        for i, chain in enumerate(streaming_chains):
+            chain_types = [self._get_node_type(nodes[nid]) for nid in chain]
+            self._log(f"  Chain {i}: {' → '.join(chain_types)}")
 
         # Pre-populate video_input outputs with props (needed by stabilizer etc. before streaming runs)
         from vdg.core.video import get_video_properties
         from pathlib import Path
+        video_inputs_loaded = set()
         for chain in streaming_chains:
             source_node = nodes[chain[0]]
             source_type = self._get_node_type(source_node)
-            if source_type == 'video_input':
+            if source_type == 'video_input' and chain[0] not in video_inputs_loaded:
                 params = source_node.get('data', {}).get('params', {}) or source_node.get('params', {})
                 filepath = params.get('filepath', '').strip()
                 if filepath and Path(filepath).exists():
@@ -1081,13 +1390,15 @@ class GraphExecutor:
                         'video': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
                         'props': props
                     }
+                    video_inputs_loaded.add(chain[0])
                     self._log(f"  Pre-loaded props for {chain[0]}: {props.width}x{props.height}")
 
         errors = []
 
         # Execute in order, using streaming for chains
         executed = set()
-        pending_chains = {c[0]: c for c in streaming_chains}  # chains waiting to execute
+        executed_chains = set()  # Track which chains have been executed by index
+        pending_chains = set(range(len(streaming_chains)))  # Chain indices waiting to execute
 
         for nid in order:
             if nid in executed:
@@ -1096,68 +1407,78 @@ class GraphExecutor:
             node = nodes[nid]
             ntype = self._get_node_type(node)
 
-            # Check if this node starts a streaming chain
-            chain = pending_chains.get(nid)
+            # Check if this node starts any pending streaming chains
+            chains_starting_here = [i for i in node_to_chains.get(nid, [])
+                                    if i in pending_chains and streaming_chains[i][0] == nid]
 
-            if chain:
-                # Check if all dependencies are satisfied
-                deps_satisfied = all(dep in executed for dep in chain_deps.get(nid, set()))
+            if chains_starting_here:
+                # Try to execute each chain starting at this node
+                for chain_idx in chains_starting_here:
+                    chain = streaming_chains[chain_idx]
+                    deps = chain_deps.get(chain_idx, set())
+                    deps_satisfied = all(dep in executed for dep in deps)
 
-                if deps_satisfied:
-                    # Execute entire chain in streaming mode
-                    self._execute_streaming_chain(chain, nodes, edges, errors)
-                    executed.update(chain)
-                    del pending_chains[nid]
-                else:
-                    # Skip for now, will be executed later
+                    if deps_satisfied:
+                        self._execute_streaming_chain(chain, nodes, edges, errors)
+                        executed.update(chain)
+                        executed_chains.add(chain_idx)
+                        pending_chains.discard(chain_idx)
+
+                # If any chains were executed starting here, continue to next node
+                if nid in executed:
                     continue
-            elif nid in streaming_nodes:
+
+            # Check if this node is part of any pending chain (not start)
+            in_pending_chain = any(i in pending_chains and streaming_chains[i][0] != nid
+                                   for i in node_to_chains.get(nid, []))
+            if in_pending_chain:
                 # Part of a chain but not the start - skip, will be handled by chain
                 continue
-            else:
-                # Execute node normally
-                params = node.get('data', {}).get('params', {}) or node.get('params', {})
 
-                # Gather inputs
-                inputs = {}
-                for e in edges:
-                    if e['target'] == nid:
-                        src_out = self.outputs.get(e['source'], {})
-                        inputs[e['targetHandle']] = src_out.get(e['sourceHandle'])
+            # Execute node normally
+            params = node.get('data', {}).get('params', {}) or node.get('params', {})
 
-                # Execute node
-                try:
-                    handler = NODE_HANDLERS.get(ntype)
-                    if handler:
-                        self._log(f"Executing {ntype} ({nid})...")
-                        result = handler(inputs, params, self)
-                        self.outputs[nid] = result or {}
-                        self._log(f"  ✓ {ntype} complete")
-                    else:
-                        self._log(f"  ⚠ No handler for {ntype}")
-                        self.outputs[nid] = {}
-                except Exception as ex:
-                    import traceback
-                    errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
-                    self._log(f"  ✗ Error in {ntype}: {ex}")
+            # Gather inputs
+            inputs = {}
+            for e in edges:
+                if e['target'] == nid:
+                    src_out = self.outputs.get(e['source'], {})
+                    inputs[e['targetHandle']] = src_out.get(e['sourceHandle'])
 
-                executed.add(nid)
+            # Execute node
+            try:
+                handler = NODE_HANDLERS.get(ntype)
+                if handler:
+                    self._log(f"Executing {ntype} ({nid})...")
+                    result = handler(inputs, params, self)
+                    self.outputs[nid] = result or {}
+                    self._log(f"  ✓ {ntype} complete")
+                else:
+                    self._log(f"  ⚠ No handler for {ntype}")
+                    self.outputs[nid] = {}
+            except Exception as ex:
+                import traceback
+                errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
+                self._log(f"  ✗ Error in {ntype}: {ex}")
+
+            executed.add(nid)
 
             # After each node, check if any pending chains can now execute
-            for chain_start in list(pending_chains.keys()):
-                if chain_start in executed:
-                    continue
-                chain = pending_chains[chain_start]
-                deps_satisfied = all(dep in executed for dep in chain_deps.get(chain_start, set()))
+            for chain_idx in list(pending_chains):
+                chain = streaming_chains[chain_idx]
+                deps = chain_deps.get(chain_idx, set())
+                deps_satisfied = all(dep in executed for dep in deps)
                 if deps_satisfied:
                     self._execute_streaming_chain(chain, nodes, edges, errors)
                     executed.update(chain)
-                    del pending_chains[chain_start]
+                    executed_chains.add(chain_idx)
+                    pending_chains.discard(chain_idx)
 
         # Execute any remaining pending chains (shouldn't happen if deps are correct)
-        for chain_start, chain in list(pending_chains.items()):
-            if chain_start not in executed:
-                self._log(f"  ⚠ Executing deferred chain starting at {chain_start}")
+        for chain_idx in list(pending_chains):
+            chain = streaming_chains[chain_idx]
+            if chain[0] not in executed:
+                self._log(f"  ⚠ Executing deferred chain starting at {chain[0]}")
                 self._execute_streaming_chain(chain, nodes, edges, errors)
                 executed.update(chain)
 
@@ -1221,6 +1542,7 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
     from vdg.tracking import FeatureTracker
     from vdg.core.video import VideoReader
     import numpy as np
+    import cv2
 
     video_data = inputs.get('video')
     roi = inputs.get('roi')
@@ -1232,9 +1554,13 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
         num_features=params.get('num_features', 30),
         initial_roi=roi,
         enforce_bbox=params.get('enforce_bbox', True),
+        win_size=params.get('win_size', 21),
+        pyramid_levels=params.get('pyramid_levels', 3),
     )
 
     track_data = {}
+    preview_writer = None
+    preview_path = params.get('preview_path', '').strip()
 
     # Check if we have a video reference (streaming) or pre-loaded frames
     if isinstance(video_data, dict) and video_data.get('filepath'):
@@ -1252,6 +1578,13 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
             for frame_num, frame in reader:
                 if frame_count == 0:
                     tracker.initialize(frame)
+                    # Initialize preview writer
+                    if preview_path:
+                        h, w = frame.shape[:2]
+                        fps = reader.properties.fps
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        preview_writer = cv2.VideoWriter(preview_path, fourcc, fps, (w, h))
+                        executor._log(f"  Preview output: {preview_path}")
                 else:
                     tracker.update(frame)
 
@@ -1260,9 +1593,31 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
                     cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
                     track_data[frame_num] = {'x': float(cx), 'y': float(cy)}
 
+                # Write preview frame
+                if preview_writer:
+                    preview = frame.copy()
+                    if tracker.points is not None:
+                        for pt in tracker.points.reshape(-1, 2):
+                            cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (0, 255, 0), -1)
+                        pts = tracker.points.reshape(-1, 2)
+                        cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
+                        cv2.circle(preview, (cx, cy), 8, (0, 255, 255), 2)
+                        cv2.drawMarker(preview, (cx, cy), (0, 255, 255), cv2.MARKER_CROSS, 16, 2)
+                    if tracker.current_roi:
+                        rx, ry, rw, rh = [int(v) for v in tracker.current_roi]
+                        cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (255, 0, 0), 2)
+                    if roi:
+                        rx, ry, rw, rh = [int(v) for v in roi]
+                        cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (0, 0, 255), 1)
+                    preview_writer.write(preview)
+
                 frame_count += 1
                 if frame_count % 100 == 0:
                     executor._log(f"  Tracked {frame_count}/{total_frames} frames...")
+
+        if preview_writer:
+            preview_writer.release()
+            executor._log(f"  Preview video saved")
 
         executor._log(f"  Tracked {frame_count} frames, {len(track_data)} valid points")
 
@@ -1526,7 +1881,7 @@ def handle_apply_transform(inputs: dict, params: dict, executor) -> dict:
         executor._log(f"  Stabilized {frame_count} frames")
 
     elif isinstance(video_data, dict) and video_data.get('frames'):
-        # PRE-LOADED MODE (legacy)
+        # PRE-LOADED MODE (legacy dict format)
         frames = video_data['frames']
         frame_nums = video_data.get('frame_nums', list(range(1, len(frames) + 1)))
         props = video_data.get('props')
@@ -1549,6 +1904,39 @@ def handle_apply_transform(inputs: dict, params: dict, executor) -> dict:
 
             if (i + 1) % 100 == 0:
                 executor._log(f"  Transformed {i + 1} frames...")
+
+        executor._log(f"  Stabilized {len(stabilized_frames)} frames")
+    elif isinstance(video_data, list) and len(video_data) > 0:
+        # Plain list of frames (from gamma node, etc.)
+        frames = video_data
+        # Use transform frame numbers if available, otherwise 1-indexed
+        transform_frame_data = inputs.get('transforms', {})
+        transform_frames = transform_frame_data.get('frames', [])
+        if transform_frames:
+            frame_nums = transform_frames
+        else:
+            frame_nums = list(range(1, len(frames) + 1))
+
+        in_h, in_w = frames[0].shape[:2]
+        out_w = in_w + x_pad
+        out_h = in_h + y_pad
+        executor._log(f"  Input: {in_w}x{in_h}, Output: {out_w}x{out_h}")
+        executor._log(f"  Processing {len(frames)} frames from list")
+
+        for i, frame in enumerate(frames):
+            frame_num = frame_nums[i] if i < len(frame_nums) else i + 1
+            t = transforms.get(frame_num)
+            M, out_w, out_h = build_transform_matrix(t, in_w, in_h, x_pad, y_pad, x_off, y_off)
+
+            stabilized = cv2.warpAffine(frame, M, (out_w, out_h))
+            stabilized_frames.append(stabilized)
+
+            mask = np.ones((in_h, in_w), dtype=np.uint8) * 255
+            mask_warped = cv2.warpAffine(mask, M, (out_w, out_h))
+            mask_frames.append(mask_warped)
+
+            if (i + 1) % 100 == 0:
+                executor._log(f"  Transformed {i + 1}/{len(frames)} frames...")
 
         executor._log(f"  Stabilized {len(stabilized_frames)} frames")
     else:
@@ -1824,6 +2212,7 @@ def handle_clahe(inputs: dict, params: dict, executor) -> dict:
 def handle_gamma(inputs: dict, params: dict, executor) -> dict:
     """Apply gamma correction for linear/sRGB conversion."""
     import numpy as np
+    from vdg.core.video import VideoReader
 
     video_in = inputs.get('video_in')
     image_in = inputs.get('image_in')
@@ -1858,8 +2247,22 @@ def handle_gamma(inputs: dict, params: dict, executor) -> dict:
         frame_corrected = np.power(frame_float, exponent)
         return np.clip(frame_corrected * max_val, 0, max_val).astype(frame.dtype)
 
-    # Handle different input formats
-    if isinstance(input_data, dict) and 'frames' in input_data:
+    # Handle video reference (filepath with frames=None) - load frames on demand
+    if isinstance(input_data, dict) and 'filepath' in input_data and input_data.get('frames') is None:
+        filepath = input_data['filepath']
+        first_frame = input_data.get('first_frame', 1)
+        last_frame = input_data.get('last_frame')
+        executor._log(f"  Loading video from {filepath}")
+
+        corrected_frames = []
+        with VideoReader(filepath, first_frame=first_frame, last_frame=last_frame) as reader:
+            for frame_num, frame in reader:
+                corrected_frames.append(apply_gamma(frame, exponent))
+
+        executor._log(f"  Processed {len(corrected_frames)} frames")
+        return {'video_out': corrected_frames, 'image_out': None, 'mask_out': mask_in}
+    # Handle dict with frames list
+    elif isinstance(input_data, dict) and 'frames' in input_data and input_data['frames'] is not None:
         frames = input_data['frames']
         corrected_frames = [apply_gamma(f, exponent) for f in frames]
         executor._log(f"  Processed {len(corrected_frames)} frames")

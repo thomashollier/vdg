@@ -63,10 +63,12 @@ class FeatureTracker:
         min_track_quality: float = 0.3,
         initial_roi: tuple[int, int, int, int] | None = None,
         enforce_bbox: bool = False,
+        win_size: int = 21,
+        pyramid_levels: int = 3,
     ):
         """
         Initialize the feature tracker.
-        
+
         Args:
             num_features: Target number of features to maintain
             quality_level: Shi-Tomasi corner quality threshold (0-1)
@@ -75,6 +77,8 @@ class FeatureTracker:
             min_track_quality: Minimum forward-backward consistency threshold
             initial_roi: Optional (x, y, w, h) bounding box to restrict features
             enforce_bbox: If True, points outside re-centered bbox are replaced
+            win_size: Lucas-Kanade search window size (default 21)
+            pyramid_levels: Number of pyramid levels for LK (default 3, max motion ~win_size * 2^levels)
         """
         self.num_features = num_features
         self.min_distance = min_distance
@@ -101,8 +105,8 @@ class FeatureTracker:
         
         # Lucas-Kanade optical flow parameters
         self.lk_params = {
-            "winSize": (21, 21),
-            "maxLevel": 3,
+            "winSize": (win_size, win_size),
+            "maxLevel": pyramid_levels,
             "criteria": (
                 cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
                 30,
