@@ -7,9 +7,11 @@ A modular Python framework for video point tracking, stabilization, frame averag
 - **Web Node Editor**: Visual graph-based workflow editor with real-time execution
 - **Streaming Pipeline**: Memory-efficient frame-by-frame processing (O(1) memory)
 - **Point Tracking**: Lucas-Kanade optical flow tracking with automatic feature replenishment
+- **Two-Point Tracking**: Single-pass tracking of two points for rotation/scale stabilization
 - **Blender Integration**: Import tracking data from Blender's movie clip editor (.crv files)
 - **Stabilization**: Transform-based video stabilization (translation, rotation, scale, perspective)
 - **Frame Averaging**: Temporal frame stacking with alpha compositing
+- **Post-Processing**: Alpha compositing operations with modular operation registry
 - **Linear Compositing**: Gamma-correct compositing in linear color space
 - **Hardware Acceleration**: VideoToolbox (macOS), NVENC (NVIDIA), VAAPI (Linux)
 
@@ -31,10 +33,10 @@ python -m vdg.nodes.web_editor
 
 Load pre-built workflows from the `workflows/` directory:
 
-- `frame_average_simple.json` - Basic frame averaging
-- `frame_average_with_clahe.json` - Frame average with contrast enhancement
-- `two_track_stabilize.json` - Two-point stabilization with frame averaging
-- `stabilize_linear_composite.json` - Linear color space compositing
+- `feature_track.json` - Single point tracking
+- `feature_track_2p.json` - Two-point tracking in single pass
+- `stabilize_linear_composite.json` - Linear color space compositing with stabilization
+- `post_process.json` - Post-processing from existing images
 
 ## Node Editor
 
@@ -43,32 +45,43 @@ Load pre-built workflows from the `workflows/` directory:
 #### Input Nodes
 | Node | Description | Outputs |
 |------|-------------|---------|
-| **Video Input** | Load video file | `video`, `props` |
+| **Video Input** | Load video file | `video_out`, `props` |
+| **Image Input** | Load existing image (PNG, TIFF, EXR) | `image_out` |
 | **Track Input** | Load .crv track file | `track_data` |
 | **ROI** | Define region of interest | `roi` |
 
 #### Tracking Nodes
 | Node | Description | Inputs | Outputs |
 |------|-------------|--------|---------|
-| **Feature Tracker** | Track points in video | `video`, `roi` | `points`, `track_data` |
+| **Feature Tracker** | Track single point in video | `video_in`, `roi` | `points`, `track_data` |
+| **Feature Tracker 2P** | Track two points in single pass | `video_in`, `roi1`, `roi2` | `track1`, `track2` |
 | **Stabilizer** | Compute transforms from tracks | `track1`, `track2`, `props` | `transforms` |
 
 #### Processing Nodes
 | Node | Description | Inputs | Outputs |
 |------|-------------|--------|---------|
-| **Apply Transform** | Apply stabilization | `video_in`, `transforms` | `video_out`, `mask` |
-| **Frame Average** | Accumulate frames | `video`, `mask` | `image`, `alpha` |
+| **Apply Transform** | Apply stabilization | `video_in`, `transforms` | `video_out`, `mask_out` |
+| **Frame Average** | Accumulate frames | `video_in`, `mask_in` | `image_out`, `alpha_out` |
 | **Gamma** | Linear/sRGB conversion | `video_in`/`image_in`, `mask_in` | `video_out`/`image_out`, `mask_out` |
-| **CLAHE** | Adaptive contrast | `image` | `image` |
+| **CLAHE** | Adaptive contrast | `image_in` | `image_out` |
+| **Post Process** | Alpha compositing operations | `image_in`, `alpha_in` | `image_out` |
 
 #### Output Nodes
 | Node | Description | Inputs |
 |------|-------------|--------|
-| **Image Output** | Save image (PNG/TIFF) | `image` |
-| **Video Output** | Save video | `video`, `props` |
+| **Image Output** | Save image (PNG/TIFF) | `image_in` |
+| **Video Output** | Save video | `video_in`, `props` |
 | **Track Output** | Save .crv track file | `track_data`, `props` |
 
 ### Node Parameters
+
+#### Feature Tracker 2P
+- `min_distance`: Minimum distance between tracked points (default: 7)
+- `quality_level`: Corner detection quality threshold (default: 0.3)
+- `block_size`: Corner detection block size (default: 7)
+- `win_size`: Optical flow window size (default: 15)
+- `max_level`: Pyramid levels for optical flow (default: 2)
+- `back_threshold`: Forward-backward validation threshold (default: 1.0)
 
 #### Stabilizer
 - `mode`: `single` (translation), `two_point` (translation+rotation+scale), `vstab`, `perspective`
@@ -89,6 +102,51 @@ Load pre-built workflows from the `workflows/` directory:
 - `mode`: `to_linear` (sRGB→linear) or `to_srgb` (linear→sRGB)
 - `gamma`: Gamma value (default 2.2)
 
+#### Post Process
+- `operation`: Select compositing operation (see below)
+- `trim`: Crop output to non-black alpha bounding box
+- `gamma`: Inverse gamma for alpha (refine_alpha only, default 2.2)
+- `contrast`: Sigmoid contrast strength (refine_alpha only, default 60.0)
+- `threshold`: Sigmoid threshold (refine_alpha only, default 0.0015)
+- `blur_size`: Gaussian blur size (refine_alpha only, default 5.0)
+- `power`: Power curve exponent (refine_alpha only, default 8.0)
+
+### Post-Process Operations
+
+The post-process node provides alpha compositing operations:
+
+| Operation | Description |
+|-----------|-------------|
+| `comp_on_white` | Composite premultiplied RGB over white background |
+| `comp_on_black` | Composite over black (clamp values) |
+| `refine_alpha` | Apply gamma, sigmoid contrast, blur, and power curve to alpha, then composite on white |
+| `divide_alpha` | Unpremultiply (divide RGB by alpha), result on black |
+| `unpremult_on_white` | Unpremultiply then add inverse alpha for white background |
+
+#### Adding Custom Operations
+
+Operations are defined in `vdg/postprocess/operations.py` using a decorator pattern:
+
+```python
+from vdg.postprocess.operations import register_operation
+
+@register_operation("my_operation", "Description of what it does")
+def my_operation(image: np.ndarray, alpha: np.ndarray, **params) -> np.ndarray:
+    """
+    Process image and alpha, return RGB result.
+
+    Args:
+        image: RGB image (uint8 or uint16, HxWx3)
+        alpha: Alpha/mask (uint8 or uint16, HxW or HxWx1)
+        **params: Additional parameters from node
+
+    Returns:
+        RGB image (same dtype as input)
+    """
+    # Your processing logic here
+    return result
+```
+
 ### Streaming Pipeline
 
 The node editor uses a memory-efficient streaming architecture:
@@ -100,7 +158,7 @@ video_input → gamma → apply_transform → frame_average → image_output
   1 frame at a time, never stores all frames in RAM
 ```
 
-**Streamable nodes**: `video_input`, `feature_tracker`, `apply_transform`, `frame_average`, `gamma`, `clahe`, `video_output`, `image_output`
+**Streamable nodes**: `video_input`, `feature_tracker`, `feature_tracker_2p`, `apply_transform`, `frame_average`, `gamma`, `clahe`, `video_output`, `image_output`
 
 **Non-streamable nodes** (need all data first): `stabilizer`, `gaussian_filter`
 
@@ -151,6 +209,10 @@ vdg/
 │   │   ├── frame_average.py      # Frame averaging/stacking
 │   │   └── color.py              # Color correction utilities
 │   │
+│   ├── postprocess/              # Alpha compositing operations
+│   │   ├── __init__.py           # Module exports
+│   │   └── operations.py         # Operation registry and implementations
+│   │
 │   ├── nodes/                    # Web node editor
 │   │   └── web_editor.py         # FastAPI server + graph executor
 │   │
@@ -159,9 +221,13 @@ vdg/
 │       └── manager.py            # OutputManager
 │
 ├── workflows/                    # Example workflow files
-│   ├── frame_average_simple.json
-│   ├── two_track_stabilize.json
+│   ├── feature_track.json
+│   ├── feature_track_2p.json
+│   ├── post_process.json
 │   └── stabilize_linear_composite.json
+│
+├── scripts/                      # Original scripts (reference)
+│   └── postProcessMovies.py
 │
 ├── examples/                     # Example scripts
 │   └── track_and_stabilize.py
@@ -217,6 +283,27 @@ for frame in video_frames:
     averager.add_frame(frame)
 
 result = averager.finalize()
+```
+
+### Post-Processing
+
+```python
+from vdg.postprocess import apply_operation, get_operations
+import cv2
+
+# Load image and alpha
+image = cv2.imread("image.png")
+alpha = cv2.imread("alpha.png", cv2.IMREAD_GRAYSCALE)
+
+# List available operations
+print(get_operations())  # ['comp_on_white', 'comp_on_black', ...]
+
+# Apply an operation
+result = apply_operation("comp_on_white", image, alpha)
+
+# Apply refine_alpha with custom parameters
+result = apply_operation("refine_alpha", image, alpha,
+                         gamma=2.2, contrast=60.0, power=8.0)
 ```
 
 ### Track File I/O
