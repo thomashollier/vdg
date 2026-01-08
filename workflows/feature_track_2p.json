@@ -1,0 +1,212 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "video_input",
+      "x": 100,
+      "y": 200,
+      "params": {
+        "filepath": "",
+        "first_frame": 1,
+        "last_frame": -1,
+        "use_hardware": false
+      }
+    },
+    {
+      "id": "n2",
+      "type": "roi",
+      "x": 100,
+      "y": 20,
+      "params": {
+        "pick_roi": "Pick ROI",
+        "x": 0,
+        "y": 0,
+        "width": 100,
+        "height": 100
+      }
+    },
+    {
+      "id": "n3",
+      "type": "roi",
+      "x": 100,
+      "y": 110,
+      "params": {
+        "pick_roi": "Pick ROI",
+        "x": 200,
+        "y": 0,
+        "width": 100,
+        "height": 100
+      }
+    },
+    {
+      "id": "n4",
+      "type": "feature_tracker_2p",
+      "x": 350,
+      "y": 60,
+      "params": {
+        "num_features": 30,
+        "enforce_bbox": true,
+        "win_size": 21,
+        "pyramid_levels": 3,
+        "preview_path": "preview_2p.mp4"
+      }
+    },
+    {
+      "id": "n5",
+      "type": "stabilizer",
+      "x": 600,
+      "y": 200,
+      "params": {
+        "mode": "two_point",
+        "ref_frame": -1,
+        "swap_xy": false,
+        "x_flip": false,
+        "y_flip": false
+      }
+    },
+    {
+      "id": "n6",
+      "type": "gamma",
+      "x": 350,
+      "y": 200,
+      "params": {
+        "mode": "to_linear",
+        "gamma": 2.2
+      }
+    },
+    {
+      "id": "n7",
+      "type": "apply_transform",
+      "x": 850,
+      "y": 250,
+      "params": {
+        "x_pad": 500,
+        "y_pad": 500,
+        "x_offset": 0,
+        "y_offset": 0
+      }
+    },
+    {
+      "id": "n8",
+      "type": "frame_average",
+      "x": 1100,
+      "y": 300,
+      "params": {
+        "comp_mode": "on_black",
+        "brightness": 1
+      }
+    },
+    {
+      "id": "n9",
+      "type": "gamma",
+      "x": 1350,
+      "y": 350,
+      "params": {
+        "mode": "to_srgb",
+        "gamma": 2.2
+      }
+    },
+    {
+      "id": "n10",
+      "type": "image_output",
+      "x": 1600,
+      "y": 400,
+      "params": {
+        "filepath": "output_2p.png",
+        "bit_depth": "16"
+      }
+    }
+  ],
+  "conns": [
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n2",
+      "tp": "video"
+    },
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n3",
+      "tp": "video"
+    },
+    {
+      "sn": "n2",
+      "sp": "roi",
+      "tn": "n4",
+      "tp": "roi1"
+    },
+    {
+      "sn": "n3",
+      "sp": "roi",
+      "tn": "n4",
+      "tp": "roi2"
+    },
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n4",
+      "tp": "video"
+    },
+    {
+      "sn": "n4",
+      "sp": "track_data1",
+      "tn": "n5",
+      "tp": "track1"
+    },
+    {
+      "sn": "n4",
+      "sp": "track_data2",
+      "tn": "n5",
+      "tp": "track2"
+    },
+    {
+      "sn": "n1",
+      "sp": "props",
+      "tn": "n5",
+      "tp": "props"
+    },
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n6",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n6",
+      "sp": "video_out",
+      "tn": "n7",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n5",
+      "sp": "transforms",
+      "tn": "n7",
+      "tp": "transforms"
+    },
+    {
+      "sn": "n7",
+      "sp": "video_out",
+      "tn": "n8",
+      "tp": "video"
+    },
+    {
+      "sn": "n7",
+      "sp": "mask",
+      "tn": "n8",
+      "tp": "mask"
+    },
+    {
+      "sn": "n8",
+      "sp": "image",
+      "tn": "n9",
+      "tp": "image_in"
+    },
+    {
+      "sn": "n9",
+      "sp": "image_out",
+      "tn": "n10",
+      "tp": "image"
+    }
+  ]
+}

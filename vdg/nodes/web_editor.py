@@ -102,6 +102,26 @@ NODE_DEFINITIONS = [
         color="#2196F3",
     ),
     NodeDefinition(
+        id="feature_tracker_2p", title="Feature Tracker 2P", category="Tracking",
+        inputs=[
+            NodePort("video", "video"),
+            NodePort("roi1", "roi", optional=True),
+            NodePort("roi2", "roi", optional=True),
+        ],
+        outputs=[
+            NodePort("track_data1", "track_data"),
+            NodePort("track_data2", "track_data"),
+        ],
+        params=[
+            NodeParam("num_features", "int", 30, min=1, max=200),
+            NodeParam("enforce_bbox", "bool", True),
+            NodeParam("win_size", "int", 21, min=11, max=101),
+            NodeParam("pyramid_levels", "int", 3, min=0, max=6),
+            NodeParam("preview_path", "string", ""),
+        ],
+        color="#2196F3",
+    ),
+    NodeDefinition(
         id="stabilizer", title="Stabilizer", category="Tracking",
         inputs=[
             NodePort("track1", "track_data"),
@@ -775,6 +795,7 @@ class GraphExecutor:
     STREAMABLE_NODES = {
         'video_input',      # Yields frames
         'feature_tracker',  # Processes frame-by-frame
+        'feature_tracker_2p',  # Tracks two ROIs frame-by-frame
         'apply_transform',  # Applies pre-computed transform per frame
         'frame_average',    # Accumulates without storing frames
         'clahe',            # Single-frame operation
@@ -1649,6 +1670,162 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
     return {'points': tracker.points, 'track_data': track_data}
 
 
+def handle_feature_tracker_2p(inputs: dict, params: dict, executor) -> dict:
+    """Track features in two ROIs simultaneously - single pass through video."""
+    from vdg.tracking import FeatureTracker
+    from vdg.core.video import VideoReader
+    import numpy as np
+    import cv2
+
+    video_data = inputs.get('video')
+    roi1 = inputs.get('roi1')
+    roi2 = inputs.get('roi2')
+
+    if video_data is None:
+        raise ValueError("No video input")
+
+    # Create two trackers with the same parameters
+    tracker_params = {
+        'num_features': params.get('num_features', 30),
+        'enforce_bbox': params.get('enforce_bbox', True),
+        'win_size': params.get('win_size', 21),
+        'pyramid_levels': params.get('pyramid_levels', 3),
+    }
+
+    tracker1 = FeatureTracker(initial_roi=roi1, **tracker_params)
+    tracker2 = FeatureTracker(initial_roi=roi2, **tracker_params)
+
+    track_data1 = {}
+    track_data2 = {}
+    preview_writer = None
+    preview_path = params.get('preview_path', '').strip()
+
+    # Check if we have a video reference (streaming) or pre-loaded frames
+    if isinstance(video_data, dict) and video_data.get('filepath'):
+        # STREAMING MODE
+        filepath = video_data['filepath']
+        first_frame = video_data.get('first_frame', 1)
+        last_frame = video_data.get('last_frame')
+        use_hardware = video_data.get('use_hardware', False)
+
+        executor._log(f"  Streaming from {filepath}")
+        executor._log(f"  ROI 1: {roi1}")
+        executor._log(f"  ROI 2: {roi2}")
+
+        frame_count = 0
+        with VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware) as reader:
+            total_frames = reader.frame_count
+            for frame_num, frame in reader:
+                if frame_count == 0:
+                    tracker1.initialize(frame)
+                    tracker2.initialize(frame)
+                    # Initialize preview writer
+                    if preview_path:
+                        h, w = frame.shape[:2]
+                        fps = reader.properties.fps
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        preview_writer = cv2.VideoWriter(preview_path, fourcc, fps, (w, h))
+                        executor._log(f"  Preview output: {preview_path}")
+                else:
+                    tracker1.update(frame)
+                    tracker2.update(frame)
+
+                # Record track 1
+                if tracker1.points is not None and len(tracker1.points) > 0:
+                    pts = tracker1.points.reshape(-1, 2)
+                    cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+                    track_data1[frame_num] = {'x': float(cx), 'y': float(cy)}
+
+                # Record track 2
+                if tracker2.points is not None and len(tracker2.points) > 0:
+                    pts = tracker2.points.reshape(-1, 2)
+                    cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+                    track_data2[frame_num] = {'x': float(cx), 'y': float(cy)}
+
+                # Write preview frame
+                if preview_writer:
+                    preview = frame.copy()
+                    # Draw tracker 1 (green)
+                    if tracker1.points is not None:
+                        for pt in tracker1.points.reshape(-1, 2):
+                            cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (0, 255, 0), -1)
+                        pts = tracker1.points.reshape(-1, 2)
+                        cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
+                        cv2.circle(preview, (cx, cy), 8, (0, 255, 0), 2)
+                        cv2.drawMarker(preview, (cx, cy), (0, 255, 0), cv2.MARKER_CROSS, 16, 2)
+                    if tracker1.current_roi:
+                        rx, ry, rw, rh = [int(v) for v in tracker1.current_roi]
+                        cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 2)
+                    if roi1:
+                        rx, ry, rw, rh = [int(v) for v in roi1]
+                        cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (0, 200, 0), 1)
+
+                    # Draw tracker 2 (blue)
+                    if tracker2.points is not None:
+                        for pt in tracker2.points.reshape(-1, 2):
+                            cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (255, 0, 0), -1)
+                        pts = tracker2.points.reshape(-1, 2)
+                        cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
+                        cv2.circle(preview, (cx, cy), 8, (255, 0, 0), 2)
+                        cv2.drawMarker(preview, (cx, cy), (255, 0, 0), cv2.MARKER_CROSS, 16, 2)
+                    if tracker2.current_roi:
+                        rx, ry, rw, rh = [int(v) for v in tracker2.current_roi]
+                        cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (255, 0, 0), 2)
+                    if roi2:
+                        rx, ry, rw, rh = [int(v) for v in roi2]
+                        cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (200, 0, 0), 1)
+
+                    preview_writer.write(preview)
+
+                frame_count += 1
+                if frame_count % 100 == 0:
+                    executor._log(f"  Tracked {frame_count}/{total_frames} frames...")
+
+        if preview_writer:
+            preview_writer.release()
+            executor._log(f"  Preview video saved")
+
+        executor._log(f"  Tracked {frame_count} frames")
+        executor._log(f"  Track 1: {len(track_data1)} valid points")
+        executor._log(f"  Track 2: {len(track_data2)} valid points")
+
+    elif isinstance(video_data, dict) and video_data.get('frames'):
+        # PRE-LOADED MODE (legacy)
+        frames = video_data['frames']
+        frame_nums = video_data.get('frame_nums', list(range(1, len(frames) + 1)))
+
+        executor._log(f"  Processing {len(frames)} pre-loaded frames")
+
+        for i, (frame_num, frame) in enumerate(zip(frame_nums, frames)):
+            if i == 0:
+                tracker1.initialize(frame)
+                tracker2.initialize(frame)
+            else:
+                tracker1.update(frame)
+                tracker2.update(frame)
+
+            if tracker1.points is not None and len(tracker1.points) > 0:
+                pts = tracker1.points.reshape(-1, 2)
+                cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+                track_data1[frame_num] = {'x': float(cx), 'y': float(cy)}
+
+            if tracker2.points is not None and len(tracker2.points) > 0:
+                pts = tracker2.points.reshape(-1, 2)
+                cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+                track_data2[frame_num] = {'x': float(cx), 'y': float(cy)}
+
+            if (i + 1) % 100 == 0:
+                executor._log(f"  Tracked {i + 1} frames...")
+
+        executor._log(f"  Tracked {len(frames)} frames")
+        executor._log(f"  Track 1: {len(track_data1)} valid points")
+        executor._log(f"  Track 2: {len(track_data2)} valid points")
+    else:
+        raise ValueError("No video frames available")
+
+    return {'track_data1': track_data1, 'track_data2': track_data2}
+
+
 def handle_stabilizer(inputs: dict, params: dict, executor) -> dict:
     """Compute stabilization transforms from track data."""
     track1 = inputs.get('track1', {})
@@ -2314,6 +2491,7 @@ NODE_HANDLERS = {
     'video_input': handle_video_input,
     'roi': handle_roi,
     'feature_tracker': handle_feature_tracker,
+    'feature_tracker_2p': handle_feature_tracker_2p,
     'stabilizer': handle_stabilizer,
     'apply_transform': handle_apply_transform,
     'frame_average': handle_frame_average,
