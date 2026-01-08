@@ -908,10 +908,12 @@ class GraphExecutor:
         """Execute a chain of nodes in streaming mode (frame by frame)."""
         from vdg.core.video import VideoReader
         import numpy as np
+        import time
 
         if not chain:
             return
 
+        chain_start = time.time()
         self._log(f"\n>>> STREAMING PIPELINE: {' → '.join(self._get_node_type(nodes[nid]) for nid in chain)}")
 
         # Get video source info
@@ -1043,7 +1045,9 @@ class GraphExecutor:
                 if frame_count % 100 == 0:
                     self._log(f"  Processed {frame_count}/{total_frames} frames...")
 
-        self._log(f"  Streamed {frame_count} frames")
+        stream_elapsed = time.time() - chain_start
+        fps = frame_count / stream_elapsed if stream_elapsed > 0 else 0
+        self._log(f"  Streamed {frame_count} frames in {stream_elapsed:.2f}s ({fps:.1f} fps)")
 
         # Finalize each node and store outputs
         for nid in chain[1:]:
@@ -1455,6 +1459,9 @@ class GraphExecutor:
         return dependencies
 
     def execute(self, graph: dict) -> dict:
+        import time
+        exec_start = time.time()
+
         nodes = {n['id']: n for n in graph.get('nodes', [])}
         edges = graph.get('edges', [])
 
@@ -1576,9 +1583,11 @@ class GraphExecutor:
                 handler = NODE_HANDLERS.get(ntype)
                 if handler:
                     self._log(f"Executing {ntype} ({nid})...")
+                    node_start = time.time()
                     result = handler(inputs, params, self)
+                    node_elapsed = time.time() - node_start
                     self.outputs[nid] = result or {}
-                    self._log(f"  ✓ {ntype} complete")
+                    self._log(f"  ✓ {ntype} complete ({node_elapsed:.2f}s)")
                 else:
                     self._log(f"  ⚠ No handler for {ntype}")
                     self.outputs[nid] = {}
@@ -1607,6 +1616,10 @@ class GraphExecutor:
                 self._log(f"  ⚠ Executing deferred chain starting at {chain[0]}")
                 self._execute_streaming_chain(chain, nodes, edges, errors)
                 executed.update(chain)
+
+        total_elapsed = time.time() - exec_start
+        self._log(f"\n{'─' * 40}")
+        self._log(f"Total execution time: {total_elapsed:.2f}s")
 
         return {
             'success': len(errors) == 0,

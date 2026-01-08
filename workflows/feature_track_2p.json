@@ -19,10 +19,10 @@
       "y": -117,
       "params": {
         "pick_roi": "Pick ROI",
-        "x": 1153,
-        "y": 513,
-        "width": 97,
-        "height": 177
+        "x": 1144,
+        "y": 501,
+        "width": 89,
+        "height": 122
       }
     },
     {
@@ -32,10 +32,10 @@
       "y": 39,
       "params": {
         "pick_roi": "Pick ROI",
-        "x": 2211,
+        "x": 2215,
         "y": 429,
-        "width": 67,
-        "height": 181
+        "width": 72,
+        "height": 97
       }
     },
     {
