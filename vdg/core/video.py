@@ -431,10 +431,12 @@ class VideoWriter:
     def write(self, frame: np.ndarray) -> None:
         """Write a frame to the video."""
         if self._failed:
+            # Using fallback writer after FFmpeg failure
             if self._writer:
                 self._writer.write(frame)
+            # If no fallback writer, frames are dropped (fallback was disabled)
             return
-        
+
         if self._using_ffmpeg and self._ffmpeg_process:
             if not frame.flags["C_CONTIGUOUS"]:
                 frame = np.ascontiguousarray(frame)
@@ -447,7 +449,7 @@ class VideoWriter:
                 if self._ffmpeg_process:
                     self._ffmpeg_process.terminate()
                     self._ffmpeg_process = None
-                
+
                 if hw_config.fallback_to_software:
                     fourcc = cv2.VideoWriter_fourcc(*self.props.fourcc)
                     self._writer = cv2.VideoWriter(
@@ -456,7 +458,12 @@ class VideoWriter:
                         self.props.fps,
                         (self.props.width, self.props.height),
                     )
-                    self._writer.write(frame)
+                    if self._writer.isOpened():
+                        self._writer.write(frame)
+                    else:
+                        import warnings
+                        warnings.warn(f"Failed to initialize fallback video writer for {self.path}")
+                        self._writer = None
         elif self._writer:
             self._writer.write(frame)
     

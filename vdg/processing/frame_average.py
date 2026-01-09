@@ -183,7 +183,6 @@ class FrameAverager(BaseProcessor):
 
         # LUTs
         self._contrast_lut: np.ndarray | None = None
-        self._gamma_lut: np.ndarray | None = None
 
         # State
         self._frame_count = 0
@@ -193,8 +192,6 @@ class FrameAverager(BaseProcessor):
         # Pre-compute LUTs if needed
         if self.config.soft_contrast != 1.0:
             self._contrast_lut = _make_soft_contrast_lut(self.config.soft_contrast)
-        if self.config.gamma != 1.0 and self.config.gamma_before:
-            self._gamma_lut = _make_gamma_lut(1.0 / self.config.gamma)
 
     def initialize(self, video_props: dict[str, Any]) -> None:
         """Initialize buffers based on video properties."""

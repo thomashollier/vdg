@@ -93,19 +93,33 @@ class CSVOutput(BaseOutput):
         super().__init__(spec, input_path)
         self.file = None
         self.writer = None
-    
+
+    def __del__(self):
+        """Ensure file is closed on garbage collection."""
+        if self.file:
+            try:
+                self.file.close()
+            except Exception:
+                pass
+
     def _get_default_suffix(self) -> str:
         return ""
-    
+
     def _get_default_extension(self) -> str:
         return "csv"
-    
+
     def initialize(self, video_props: dict) -> None:
-        self.file = open(self.output_path, 'w', newline='')
-        self.writer = csv.writer(self.file)
-        self.writer.writerow([
-            'frame', 'region', 'point_id', 'x', 'y', 'track_length'
-        ])
+        try:
+            self.file = open(self.output_path, 'w', newline='')
+            self.writer = csv.writer(self.file)
+            self.writer.writerow([
+                'frame', 'region', 'point_id', 'x', 'y', 'track_length'
+            ])
+        except Exception:
+            if self.file:
+                self.file.close()
+                self.file = None
+            raise
     
     def process_frame(
         self,

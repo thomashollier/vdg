@@ -120,6 +120,7 @@ NODE_DEFINITIONS = [
         outputs=[NodePort("points", "points"), NodePort("track_data", "track_data")],
         params=[
             NodeParam("num_features", "int", 30, min=1, max=200),
+            NodeParam("min_distance", "int", 30, min=5, max=100),
             NodeParam("enforce_bbox", "bool", True),
             NodeParam("win_size", "int", 21, min=11, max=101),
             NodeParam("pyramid_levels", "int", 3, min=0, max=6),
@@ -140,6 +141,7 @@ NODE_DEFINITIONS = [
         ],
         params=[
             NodeParam("num_features", "int", 30, min=1, max=200),
+            NodeParam("min_distance", "int", 30, min=5, max=100),
             NodeParam("enforce_bbox", "bool", True),
             NodeParam("win_size", "int", 21, min=11, max=101),
             NodeParam("pyramid_levels", "int", 3, min=0, max=6),
@@ -271,6 +273,23 @@ NODE_DEFINITIONS = [
         outputs=[NodePort("track_data", "track_data")],
         params=[NodeParam("sigma", "float", 5.0, min=0.1, max=50.0)],
         color="#607D8B",
+    ),
+    NodeDefinition(
+        id="rgb_multiply", title="RGB Multiply", category="Processing",
+        inputs=[
+            NodePort("video_in", "video", optional=True),
+            NodePort("image_in", "image", optional=True),
+        ],
+        outputs=[
+            NodePort("video_out", "video"),
+            NodePort("image_out", "image"),
+        ],
+        params=[
+            NodeParam("red", "float", 1.0, min=0.0, max=4.0),
+            NodeParam("green", "float", 1.0, min=0.0, max=4.0),
+            NodeParam("blue", "float", 1.0, min=0.0, max=4.0),
+        ],
+        color="#FF9800",
     ),
 ]
 
@@ -951,6 +970,7 @@ class GraphExecutor:
         'frame_average',    # Accumulates without storing frames
         'clahe',            # Single-frame operation
         'gamma',            # Single-frame gamma correction
+        'rgb_multiply',     # Single-frame RGB channel multiply
         'video_output',     # Writes frames as they come
         'image_output',     # Final output (end of stream)
     }
@@ -1359,6 +1379,16 @@ class GraphExecutor:
                                 '_data': out_data
                             }
 
+                        elif ntype == 'rgb_multiply':
+                            out_frame, out_data = self._stream_rgb_multiply(
+                                current_frame, current_data, state, params
+                            )
+                            frame_outputs[nid] = {
+                                'video_out': out_frame,
+                                'image_out': out_frame,
+                                '_data': out_data
+                            }
+
                     except Exception as ex:
                         errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
                         self._log(f"  ✗ Error in {ntype}: {ex}")
@@ -1464,6 +1494,7 @@ class GraphExecutor:
             roi = inputs.get('roi')
             state['tracker'] = FeatureTracker(
                 num_features=params.get('num_features', 30),
+                min_distance=params.get('min_distance', 30),
                 initial_roi=roi,
                 enforce_bbox=params.get('enforce_bbox', True),
                 win_size=params.get('win_size', 21),
@@ -1526,6 +1557,7 @@ class GraphExecutor:
             roi2 = inputs.get('roi2')
             tracker_params = {
                 'num_features': params.get('num_features', 30),
+                'min_distance': params.get('min_distance', 30),
                 'enforce_bbox': params.get('enforce_bbox', True),
                 'win_size': params.get('win_size', 21),
                 'pyramid_levels': params.get('pyramid_levels', 3),
@@ -1798,6 +1830,37 @@ class GraphExecutor:
         mask = data.get('mask')
         if mask is not None:
             data['mask'] = mask  # unchanged
+
+        state['frame_count'] += 1
+        return frame_corrected, data
+
+    def _stream_rgb_multiply(self, frame, data, state, params):
+        """Apply RGB channel multipliers to one frame."""
+        import numpy as np
+
+        if state.get('frame_count') is None:
+            state['frame_count'] = 0
+
+        red = params.get('red', 1.0)
+        green = params.get('green', 1.0)
+        blue = params.get('blue', 1.0)
+
+        # Normalize to 0-1, apply multipliers, scale back
+        if frame.dtype == np.uint8:
+            max_val = 255.0
+        elif frame.dtype == np.uint16:
+            max_val = 65535.0
+        else:
+            max_val = 1.0
+
+        frame_float = frame.astype(np.float32) / max_val
+
+        # Apply multipliers per channel (BGR order from OpenCV)
+        frame_float[:, :, 0] *= blue
+        frame_float[:, :, 1] *= green
+        frame_float[:, :, 2] *= red
+
+        frame_corrected = np.clip(frame_float * max_val, 0, max_val).astype(frame.dtype)
 
         state['frame_count'] += 1
         return frame_corrected, data
@@ -2092,6 +2155,7 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
 
     tracker = FeatureTracker(
         num_features=params.get('num_features', 30),
+        min_distance=params.get('min_distance', 30),
         initial_roi=roi,
         enforce_bbox=params.get('enforce_bbox', True),
         win_size=params.get('win_size', 21),
@@ -2208,6 +2272,7 @@ def handle_feature_tracker_2p(inputs: dict, params: dict, executor) -> dict:
     # Create two trackers with the same parameters
     tracker_params = {
         'num_features': params.get('num_features', 30),
+        'min_distance': params.get('min_distance', 30),
         'enforce_bbox': params.get('enforce_bbox', True),
         'win_size': params.get('win_size', 21),
         'pyramid_levels': params.get('pyramid_levels', 3),
@@ -3003,6 +3068,77 @@ def handle_gamma(inputs: dict, params: dict, executor) -> dict:
         raise ValueError("Unsupported input format")
 
 
+def handle_rgb_multiply(inputs: dict, params: dict, executor) -> dict:
+    """Multiply RGB channels individually for color correction."""
+    import numpy as np
+    from vdg.core.video import VideoReader
+
+    video_in = inputs.get('video_in')
+    image_in = inputs.get('image_in')
+
+    # Accept either video or image input
+    input_data = video_in if video_in is not None else image_in
+
+    if input_data is None:
+        raise ValueError("No video or image input")
+
+    red = params.get('red', 1.0)
+    green = params.get('green', 1.0)
+    blue = params.get('blue', 1.0)
+
+    executor._log(f"  RGB multiply: R={red}, G={green}, B={blue}")
+
+    def apply_rgb_multiply(frame, r, g, b):
+        """Apply RGB multipliers to a frame."""
+        if frame.dtype == np.uint8:
+            max_val = 255.0
+        elif frame.dtype == np.uint16:
+            max_val = 65535.0
+        else:
+            max_val = 1.0
+
+        frame_float = frame.astype(np.float32) / max_val
+
+        # Apply multipliers per channel (assuming BGR order from OpenCV)
+        frame_float[:, :, 0] *= b  # Blue channel
+        frame_float[:, :, 1] *= g  # Green channel
+        frame_float[:, :, 2] *= r  # Red channel
+
+        return np.clip(frame_float * max_val, 0, max_val).astype(frame.dtype)
+
+    # Handle video reference (filepath with frames=None) - load frames on demand
+    if isinstance(input_data, dict) and 'filepath' in input_data and input_data.get('frames') is None:
+        filepath = input_data['filepath']
+        first_frame = input_data.get('first_frame', 1)
+        last_frame = input_data.get('last_frame')
+        executor._log(f"  Loading video from {filepath}")
+
+        corrected_frames = []
+        with VideoReader(filepath, first_frame=first_frame, last_frame=last_frame) as reader:
+            for frame_num, frame in reader:
+                corrected_frames.append(apply_rgb_multiply(frame, red, green, blue))
+
+        executor._log(f"  Processed {len(corrected_frames)} frames")
+        return {'video_out': corrected_frames, 'image_out': None}
+    # Handle dict with frames list
+    elif isinstance(input_data, dict) and 'frames' in input_data and input_data['frames'] is not None:
+        frames = input_data['frames']
+        corrected_frames = [apply_rgb_multiply(f, red, green, blue) for f in frames]
+        executor._log(f"  Processed {len(corrected_frames)} frames")
+        return {'video_out': corrected_frames, 'image_out': None}
+    elif isinstance(input_data, list):
+        corrected_frames = [apply_rgb_multiply(f, red, green, blue) for f in input_data]
+        executor._log(f"  Processed {len(corrected_frames)} frames")
+        return {'video_out': corrected_frames, 'image_out': None}
+    elif isinstance(input_data, np.ndarray):
+        # Single image
+        corrected = apply_rgb_multiply(input_data, red, green, blue)
+        executor._log(f"  Processed single image")
+        return {'video_out': None, 'image_out': corrected}
+    else:
+        raise ValueError("Unsupported input format")
+
+
 def handle_post_process(inputs: dict, params: dict, executor) -> dict:
     """Apply post-processing operation to image + alpha."""
     from vdg.postprocess.operations import apply_operation, get_operations
@@ -3116,7 +3252,7 @@ NODE_HANDLERS = {
     'gamma': handle_gamma,
     'post_process': handle_post_process,
     'gaussian_filter': handle_gaussian_filter,
-    'color_correction': lambda i, p, e: i,  # TODO
+    'rgb_multiply': handle_rgb_multiply,
 }
 
 
