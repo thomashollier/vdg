@@ -3,7 +3,7 @@ Core module - Base classes, protocols, and shared abstractions.
 """
 
 from vdg.core.base import BaseProcessor, ProcessingContext
-from vdg.core.video import VideoReader, VideoWriter, VideoProperties
+from vdg.core.video import VideoReader, VideoWriter, VideoProperties, FFmpegReader
 from vdg.core.config import Config, load_config, save_config
 from vdg.core.hardware import (
     hw_config,
@@ -19,6 +19,7 @@ __all__ = [
     "VideoReader",
     "VideoWriter",
     "VideoProperties",
+    "FFmpegReader",
     "Config",
     "load_config",
     "save_config",

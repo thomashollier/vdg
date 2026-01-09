@@ -25,6 +25,22 @@ except ImportError:
     raise
 
 
+def _ensure_video_extension(path: str) -> str:
+    """Ensure preview path has a video extension, not an image extension.
+
+    FFmpeg's image2 muxer can't write multiple frames to the same file,
+    so we need to ensure the path has a video extension like .mp4.
+    """
+    import os
+    if not path:
+        return path
+    base, ext = os.path.splitext(path)
+    video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
+    if ext.lower() not in video_extensions:
+        return base + '.mp4'
+    return path
+
+
 # =============================================================================
 # NODE DEFINITIONS
 # =============================================================================
@@ -67,6 +83,7 @@ NODE_DEFINITIONS = [
             NodeParam("first_frame", "int", 1, min=1),
             NodeParam("last_frame", "int", -1),
             NodeParam("use_hardware", "bool", False),
+            NodeParam("hlg_convert", "bool", False),
         ],
         color="#4CAF50",
     ),
@@ -222,7 +239,7 @@ NODE_DEFINITIONS = [
         inputs=[NodePort("video_in", "video"), NodePort("props", "props")],
         outputs=[],
         params=[
-            NodeParam("filepath", "string", "output.mp4"),
+            NodeParam("filepath", "file", "output.mp4"),
             NodeParam("use_hardware", "bool", True),
             NodeParam("bitrate", "string", "20M"),
         ],
@@ -233,7 +250,7 @@ NODE_DEFINITIONS = [
         inputs=[NodePort("image_in", "image")],
         outputs=[],
         params=[
-            NodeParam("filepath", "string", "output.png"),
+            NodeParam("filepath", "file", "output.png"),
             NodeParam("bit_depth", "choice", "16", choices=["8", "16"]),
         ],
         color="#9C27B0",
@@ -243,8 +260,7 @@ NODE_DEFINITIONS = [
         inputs=[NodePort("track_data", "track_data"), NodePort("props", "props")],
         outputs=[],
         params=[
-            NodeParam("filepath", "string", "track.crv"),
-            NodeParam("track_type", "choice", "2", choices=["1", "2"]),
+            NodeParam("filepath", "file", "track.crv"),
             NodeParam("center_mode", "choice", "centroid", choices=["centroid", "roi_center", "median"]),
         ],
         color="#9C27B0",
@@ -283,7 +299,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #fff; overflow: hidden; }
-        .container { display: flex; height: 100vh; }
+        .container { display: flex; height: calc(100vh - 40px); }
         .sidebar { width: 200px; background: #16213e; padding: 12px; overflow-y: auto; border-right: 1px solid #333; }
         .sidebar h2 { font-size: 14px; margin-bottom: 12px; color: #4fc3f7; }
         .sidebar h3 { font-size: 10px; margin: 12px 0 6px; text-transform: uppercase; color: #666; }
@@ -334,9 +350,22 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .modal-btns button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
         .modal-btns .apply { background: #4CAF50; color: #fff; }
         .modal-btns .cancel { background: #555; color: #fff; }
+        .project-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #16213e; border-bottom: 1px solid #333; height: 40px; }
+        .project-bar label { font-size: 11px; color: #888; white-space: nowrap; }
+        .project-bar input { flex: 1; background: #0f0f1a; border: 1px solid #333; color: #fff; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+        .project-bar input:focus { border-color: #4fc3f7; outline: none; }
+        .project-bar .project-status { font-size: 10px; padding: 3px 8px; border-radius: 3px; }
+        .project-bar .project-status.valid { background: #2e7d32; color: #fff; }
+        .project-bar .project-status.invalid { background: #c62828; color: #fff; }
+        .project-bar .project-status.empty { background: #555; color: #aaa; }
     </style>
 </head>
 <body>
+    <div class="project-bar">
+        <label>Project Directory:</label>
+        <input type="text" id="project-dir" placeholder="/path/to/project" onchange="validateProjectDir()">
+        <span class="project-status empty" id="project-status">Not Set</span>
+    </div>
     <div class="container">
         <div class="sidebar" id="sidebar"></div>
         <div class="canvas-area" id="canvas-area">
@@ -369,6 +398,40 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 const DEFS = ''' + json.dumps(get_nodes_json()) + ''';
 let nodes = [], conns = [], sel = null, dragN = null, dragC = null, nid = 0;
 let off = {x: 0, y: 0}, pan = {x: 0, y: 0}, panning = false, panStart = {};
+let projectDir = '';
+
+async function validateProjectDir() {
+    const input = document.getElementById('project-dir');
+    const statusEl = document.getElementById('project-status');
+    const path = input.value.trim();
+
+    if (!path) {
+        projectDir = '';
+        statusEl.className = 'project-status empty';
+        statusEl.textContent = 'Not Set';
+        return;
+    }
+
+    try {
+        const r = await fetch('/api/validate-path?path=' + encodeURIComponent(path));
+        const data = await r.json();
+
+        if (data.valid) {
+            projectDir = data.path;
+            input.value = data.path;  // Use normalized path
+            statusEl.className = 'project-status valid';
+            statusEl.textContent = 'Valid';
+        } else {
+            projectDir = '';
+            statusEl.className = 'project-status invalid';
+            statusEl.textContent = data.error || 'Invalid';
+        }
+    } catch (err) {
+        projectDir = '';
+        statusEl.className = 'project-status invalid';
+        statusEl.textContent = 'Error';
+    }
+}
 
 function init() {
     const sb = document.getElementById('sidebar');
@@ -551,6 +614,18 @@ function deleteConn(idx) {
 
 function status(m) { document.getElementById('status').textContent = m; }
 
+// Path resolution helper
+function resolvePath(filepath) {
+    if (!filepath) return filepath;
+    // If absolute path (starts with /), return as-is
+    if (filepath.startsWith('/')) return filepath;
+    // If relative and we have a project dir, join them
+    if (projectDir) {
+        return projectDir + (projectDir.endsWith('/') ? '' : '/') + filepath;
+    }
+    return filepath;
+}
+
 // ROI Picker
 let roiNode = null, roiRect = null, roiDrawing = false, roiStart = null;
 let origW = 0, origH = 0;
@@ -566,7 +641,7 @@ function pickROI(nodeId) {
     const srcNode = nodes.find(n => n.id === conn.sn);
     if (!srcNode || srcNode.type !== 'video_input') { alert('Source must be a video_input node'); return; }
 
-    const filepath = srcNode.params.filepath;
+    const filepath = resolvePath(srcNode.params.filepath);
     if (!filepath) { alert('Video input has no filepath set'); return; }
 
     const firstFrame = srcNode.params.first_frame || 1;
@@ -691,7 +766,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function execute() {
     status('Running...');
-    const g = { nodes: nodes.map(n => ({id: n.id, type: n.type, data: {params: n.params}})), edges: conns.map(c => ({source: c.sn, sourceHandle: c.sp, target: c.tn, targetHandle: c.tp})) };
+    const g = {
+        projectDir: projectDir,
+        nodes: nodes.map(n => ({id: n.id, type: n.type, data: {params: n.params}})),
+        edges: conns.map(c => ({source: c.sn, sourceHandle: c.sp, target: c.tn, targetHandle: c.tp}))
+    };
     try {
         const r = await fetch('/api/execute', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(g)});
         const j = await r.json();
@@ -712,7 +791,8 @@ async function execute() {
 }
 
 function save() {
-    const b = new Blob([JSON.stringify({nodes, conns}, null, 2)], {type: 'application/json'});
+    const data = {projectDir, nodes, conns};
+    const b = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
     const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'vdg-graph.json'; a.click();
     status('Saved');
 }
@@ -721,12 +801,18 @@ function load() {
     const i = document.createElement('input'); i.type = 'file'; i.accept = '.json';
     i.onchange = e => {
         const r = new FileReader();
-        r.onload = ev => {
+        r.onload = async ev => {
             const d = JSON.parse(ev.target.result);
             clear();
             nodes = d.nodes || []; conns = d.conns || [];
             nid = Math.max(0, ...nodes.map(n => parseInt(n.id.slice(1)) || 0));
             nodes.forEach(render); drawConns();
+
+            // Restore project directory
+            if (d.projectDir) {
+                document.getElementById('project-dir').value = d.projectDir;
+                await validateProjectDir();
+            }
             status('Loaded');
         };
         r.readAsText(e.target.files[0]);
@@ -735,8 +821,17 @@ function load() {
 }
 
 function clear() {
-    nodes.forEach(n => document.getElementById(n.id)?.remove());
-    nodes = []; conns = []; drawConns(); desel(); status('Cleared');
+    document.getElementById('canvas').innerHTML = '';
+    document.getElementById('svg-layer').innerHTML = '';
+    nodes = []; conns = []; nid = 0; pan = {x: 0, y: 0};
+    document.getElementById('canvas').style.transform = 'translate(0px, 0px)';
+    document.getElementById('svg-layer').style.transform = 'translate(0px, 0px)';
+    // Clear project directory
+    projectDir = '';
+    document.getElementById('project-dir').value = '';
+    document.getElementById('project-status').className = 'project-status empty';
+    document.getElementById('project-status').textContent = 'Not Set';
+    desel(); status('Cleared');
 }
 
 init();
@@ -797,6 +892,31 @@ async def get_frame(filepath: str, frame: int = 1):
         cap.release()
 
 
+@app.get("/api/validate-path")
+async def validate_path(path: str):
+    """Validate a directory path exists and is accessible."""
+    from pathlib import Path
+
+    if not path:
+        return {"valid": False, "error": "Empty path"}
+
+    target = Path(path).expanduser().resolve()
+
+    if not target.exists():
+        return {"valid": False, "error": "Does not exist"}
+
+    if not target.is_dir():
+        return {"valid": False, "error": "Not a directory"}
+
+    # Check if readable
+    try:
+        list(target.iterdir())
+    except PermissionError:
+        return {"valid": False, "error": "Permission denied"}
+
+    return {"valid": True, "path": str(target)}
+
+
 @app.post("/api/execute")
 async def execute_graph(graph: dict):
     """Execute the node graph."""
@@ -851,6 +971,32 @@ class GraphExecutor:
     def __init__(self):
         self.outputs = {}  # node_id -> {port_name: value}
         self.log = []
+        self.project_dir = None  # Project directory for relative paths
+
+    def _resolve_path(self, filepath: str) -> str:
+        """Resolve a filepath relative to project directory.
+
+        If filepath is absolute, returns it as-is.
+        If filepath is relative and project_dir is set, joins them.
+        Supports subdirectories (e.g., 'input/clip.mp4').
+        """
+        from pathlib import Path
+
+        if not filepath:
+            return filepath
+
+        path = Path(filepath)
+
+        # If absolute, return as-is
+        if path.is_absolute():
+            return str(path)
+
+        # If relative and we have a project dir, resolve against it
+        if self.project_dir:
+            return str(Path(self.project_dir) / filepath)
+
+        # No project dir - return as-is (will likely fail if truly relative)
+        return filepath
 
     def _log(self, message: str):
         """Add message to log and print to terminal."""
@@ -864,8 +1010,13 @@ class GraphExecutor:
         """
         Find chains of nodes that can be executed in streaming mode.
 
-        Returns list of chains, where each chain is a list of node IDs
-        that can stream frames through together.
+        Creates SEPARATE chains for each distinct initial video path from video_input.
+        Each chain can have internal branching (e.g., apply_transform → frame_average + video_output).
+
+        Returns list of chain dicts, where each chain contains:
+        - 'root': the video_input node ID
+        - 'nodes': list of node IDs in topological order
+        - 'video_edges': list of (src, tgt, src_port, tgt_port) for video connections
         """
         # Build adjacency info
         outgoing = {nid: [] for nid in nodes}  # node -> [(target_node, src_port, tgt_port)]
@@ -876,9 +1027,10 @@ class GraphExecutor:
             outgoing[src].append((tgt, e['sourceHandle'], e['targetHandle']))
             incoming[tgt].append((src, e['sourceHandle'], e['targetHandle']))
 
-        # Find video streaming chains
-        # A chain starts at video_input and continues through streamable nodes
-        # until hitting a non-streamable node or branching
+        # Video port names
+        VIDEO_OUT_PORTS = ('video', 'video_out', 'mask', 'mask_out')
+        VIDEO_IN_PORTS = ('video', 'video_in', 'mask', 'mask_in')
+
         chains = []
 
         for nid, node in nodes.items():
@@ -886,14 +1038,20 @@ class GraphExecutor:
 
             # Start chains from video_input
             if ntype == 'video_input':
-                # Find all video outputs from this video_input
-                video_outs = [
+                # Find all DIRECT video outputs from this video_input
+                # Each becomes the start of a separate chain
+                direct_video_outs = [
                     (tgt, sp, tp) for tgt, sp, tp in outgoing[nid]
-                    if sp in ('video', 'video_out') and tp in ('video', 'video_in')
+                    if sp in VIDEO_OUT_PORTS and tp in VIDEO_IN_PORTS
                 ]
 
-                # Trace each video output as a potential chain
-                for start_node, _, _ in video_outs:
+                # Group by target node to avoid duplicates (same node via different ports)
+                seen_starts = set()
+
+                for start_node, start_sp, start_tp in direct_video_outs:
+                    if start_node in seen_starts:
+                        continue
+
                     start_type = self._get_node_type(nodes[start_node])
 
                     # Skip non-streamable starting nodes
@@ -902,67 +1060,118 @@ class GraphExecutor:
                     if start_type not in self.STREAMABLE_NODES:
                         continue
 
-                    # Start a chain from video_input through this streamable node
-                    chain = [nid, start_node]
-                    current = start_node
+                    seen_starts.add(start_node)
 
-                    while True:
-                        # Find video output connections from current node
-                        next_video_outs = [
-                            (tgt, sp, tp) for tgt, sp, tp in outgoing[current]
-                            if sp in ('video', 'video_out') and tp in ('video', 'video_in')
-                        ]
+                    # BFS from this starting node to find all downstream streamable nodes
+                    chain_nodes = set([nid, start_node])
+                    chain_edges = [(nid, start_node, start_sp, start_tp)]
+                    queue = [start_node]
+                    visited = set([nid, start_node])
 
-                        if len(next_video_outs) != 1:
-                            # Branching or end of chain
-                            break
+                    while queue:
+                        current = queue.pop(0)
 
-                        next_node, _, _ = next_video_outs[0]
-                        next_type = self._get_node_type(nodes[next_node])
+                        # Find all video output connections
+                        for tgt, sp, tp in outgoing[current]:
+                            if sp not in VIDEO_OUT_PORTS or tp not in VIDEO_IN_PORTS:
+                                continue
 
-                        if next_type in self.NON_STREAMABLE_NODES:
-                            # Hit a barrier - stop chain here
-                            break
+                            tgt_type = self._get_node_type(nodes[tgt])
 
-                        if next_type in self.STREAMABLE_NODES:
-                            chain.append(next_node)
-                            current = next_node
-                        else:
-                            break
+                            # Skip non-streamable nodes
+                            if tgt_type in self.NON_STREAMABLE_NODES:
+                                continue
+                            if tgt_type not in self.STREAMABLE_NODES:
+                                continue
 
-                    if len(chain) > 1:
-                        chains.append(chain)
+                            # Add edge to chain
+                            chain_edges.append((current, tgt, sp, tp))
+                            chain_nodes.add(tgt)
+
+                            if tgt not in visited:
+                                visited.add(tgt)
+                                queue.append(tgt)
+
+                    if len(chain_nodes) > 1:
+                        # Topological sort of chain nodes
+                        sorted_nodes = self._topological_sort_chain(nid, chain_nodes, chain_edges)
+                        chains.append({
+                            'root': nid,
+                            'nodes': sorted_nodes,
+                            'video_edges': chain_edges,
+                        })
 
         return chains
 
-    def _execute_streaming_chain(self, chain: list, nodes: dict, edges: list, errors: list) -> None:
-        """Execute a chain of nodes in streaming mode (frame by frame)."""
-        from vdg.core.video import VideoReader
+    def _topological_sort_chain(self, root: str, nodes: set, edges: list) -> list:
+        """Topological sort of nodes in a streaming chain."""
+        # Build in-degree count for chain nodes only
+        in_degree = {n: 0 for n in nodes}
+        adj = {n: [] for n in nodes}
+
+        for src, tgt, _, _ in edges:
+            if src in nodes and tgt in nodes:
+                adj[src].append(tgt)
+                in_degree[tgt] += 1
+
+        # Kahn's algorithm
+        result = []
+        queue = [n for n in nodes if in_degree[n] == 0]
+
+        while queue:
+            # Sort for deterministic order
+            queue.sort()
+            node = queue.pop(0)
+            result.append(node)
+
+            for neighbor in adj[node]:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+
+        return result
+
+    def _execute_streaming_chain(self, chain: dict, nodes: dict, edges: list, errors: list) -> None:
+        """Execute a chain of nodes in streaming mode (frame by frame).
+
+        Chain is a dict with:
+        - 'root': video_input node ID
+        - 'nodes': list of node IDs in topological order
+        - 'video_edges': list of (src, tgt, src_port, tgt_port) for video connections
+        """
+        from vdg.core.video import VideoReader, FFmpegReader
         import numpy as np
         import time
 
-        if not chain:
+        if not chain or not chain.get('nodes'):
             return
 
+        chain_nodes = chain['nodes']
+        video_edges = chain.get('video_edges', [])
+        root_id = chain['root']
+
+        # Build a description of the chain for logging
+        chain_desc = self._describe_chain(chain, nodes)
         chain_start = time.time()
-        self._log(f"\n>>> STREAMING PIPELINE: {' → '.join(self._get_node_type(nodes[nid]) for nid in chain)}")
+        self._log(f"\n>>> STREAMING PIPELINE: {chain_desc}")
 
         # Get video source info
-        source_node = nodes[chain[0]]
+        source_node = nodes[root_id]
         source_params = source_node.get('data', {}).get('params', {}) or source_node.get('params', {})
-        filepath = source_params.get('filepath', '').strip()
+        filepath = self._resolve_path(source_params.get('filepath', '').strip())
         first_frame = source_params.get('first_frame', 1)
         last_frame = source_params.get('last_frame', -1)
         last_frame = None if last_frame == -1 else last_frame
         use_hardware = source_params.get('use_hardware', False)
+        hlg_convert = source_params.get('hlg_convert', False)
 
         if not filepath:
-            errors.append({'node_id': chain[0], 'type': 'video_input', 'error': 'No filepath specified'})
+            errors.append({'node_id': root_id, 'type': 'video_input', 'error': 'No filepath specified'})
             return
 
         from pathlib import Path
         if not Path(filepath).exists():
-            errors.append({'node_id': chain[0], 'type': 'video_input', 'error': f'File not found: {filepath}'})
+            errors.append({'node_id': root_id, 'type': 'video_input', 'error': f'File not found: {filepath}'})
             return
 
         from vdg.core.video import get_video_properties
@@ -971,16 +1180,24 @@ class GraphExecutor:
         self._log(f"  Video: {props.width}x{props.height}, {props.fps:.2f}fps")
 
         # Store video reference for non-streaming nodes that might need it
-        self.outputs[chain[0]] = {
+        self.outputs[root_id] = {
             'video_out': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props, 'use_hardware': use_hardware},
             'props': props
         }
+
+        # Build mapping: node -> list of (upstream_node, src_port, tgt_port)
+        node_video_inputs = {nid: [] for nid in chain_nodes}
+        for src, tgt, sp, tp in video_edges:
+            node_video_inputs[tgt].append((src, sp, tp))
 
         # Prepare streaming state for each node in chain
         chain_state = {}
         transform_frames = None  # Track frame range from transforms if present
 
-        for nid in chain[1:]:  # Skip video_input
+        for nid in chain_nodes:
+            if nid == root_id:
+                continue  # Skip video_input
+
             node = nodes[nid]
             ntype = self._get_node_type(node)
             params = node.get('data', {}).get('params', {}) or node.get('params', {})
@@ -988,7 +1205,7 @@ class GraphExecutor:
             # Gather non-video inputs (transforms, ROI, etc.)
             non_video_inputs = {}
             for e in edges:
-                if e['target'] == nid and e['targetHandle'] not in ('video', 'video_in'):
+                if e['target'] == nid and e['targetHandle'] not in ('video', 'video_in', 'mask', 'mask_in'):
                     src_out = self.outputs.get(e['source'], {})
                     non_video_inputs[e['targetHandle']] = src_out.get(e['sourceHandle'])
 
@@ -1003,6 +1220,7 @@ class GraphExecutor:
                 'type': ntype,
                 'params': params,
                 'inputs': non_video_inputs,
+                'video_inputs': node_video_inputs[nid],  # (upstream, src_port, tgt_port)
                 'accumulator': None,
                 'alpha_accumulator': None,
                 'frame_count': 0,
@@ -1022,54 +1240,130 @@ class GraphExecutor:
 
         # Stream frames through the chain
         frame_count = 0
-        self._log(f"  Hardware decode: {use_hardware}")
-        with VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware) as reader:
+
+        # Choose reader based on HLG convert setting
+        if hlg_convert:
+            # HLG/HDR to SDR tonemapping via FFmpeg
+            hlg_filter = (
+                "zscale=t=linear:npl=100,format=gbrpf32le,"
+                "zscale=p=bt709,tonemap=hable:desat=0,"
+                "zscale=t=bt709:m=bt709:r=tv,format=bgr24"
+            )
+            self._log(f"  HLG Convert: enabled (FFmpeg tonemapping)")
+            reader_ctx = FFmpegReader(filepath, first_frame, last_frame, vf=hlg_filter)
+        else:
+            self._log(f"  Hardware decode: {use_hardware}")
+            reader_ctx = VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware)
+
+        with reader_ctx as reader:
             total_frames = reader.frame_count
             self._log(f"  Streaming {total_frames} frames...")
 
             for frame_num, frame in reader:
-                current_frame = frame
-                current_data = {'frame_num': frame_num, 'props': props}
+                # Track per-node outputs for this frame
+                # Each node stores: {'video_out': frame, 'mask_out': mask, ...}
+                frame_outputs = {
+                    root_id: {
+                        'video_out': frame,
+                        'video': frame,  # Alias for old port name
+                        '_data': {'frame_num': frame_num, 'props': props}
+                    }
+                }
 
-                # Process through each node in chain
-                for nid in chain[1:]:
+                # Process through each node in topological order
+                for nid in chain_nodes:
+                    if nid == root_id:
+                        continue
+
                     state = chain_state[nid]
                     ntype = state['type']
                     params = state['params']
                     inputs = state['inputs']
 
+                    # Get video input(s) from upstream node(s)
+                    current_frame = None
+                    current_mask = None
+                    current_data = {'frame_num': frame_num, 'props': props}
+
+                    for upstream, src_port, tgt_port in state['video_inputs']:
+                        upstream_out = frame_outputs.get(upstream, {})
+                        if tgt_port in ('video_in', 'video'):
+                            current_frame = upstream_out.get(src_port)
+                            if '_data' in upstream_out:
+                                current_data = upstream_out['_data']
+                        elif tgt_port in ('mask_in', 'mask'):
+                            current_mask = upstream_out.get(src_port)
+
+                    if current_frame is None:
+                        # Node has no video input ready - skip
+                        continue
+
                     try:
                         if ntype == 'feature_tracker':
-                            current_frame, current_data = self._stream_feature_tracker(
+                            out_frame, out_data = self._stream_feature_tracker(
                                 current_frame, current_data, state, params, inputs
                             )
+                            frame_outputs[nid] = {'video_out': out_frame, '_data': out_data}
+
                         elif ntype == 'feature_tracker_2p':
-                            current_frame, current_data = self._stream_feature_tracker_2p(
+                            out_frame, out_data = self._stream_feature_tracker_2p(
                                 current_frame, current_data, state, params, inputs
                             )
+                            frame_outputs[nid] = {'video_out': out_frame, '_data': out_data}
+
                         elif ntype == 'apply_transform':
-                            current_frame, current_data = self._stream_apply_transform(
+                            out_frame, out_data = self._stream_apply_transform(
                                 current_frame, current_data, state, params, inputs
                             )
+                            # apply_transform produces both video_out and mask_out
+                            frame_outputs[nid] = {
+                                'video_out': out_frame,
+                                'mask_out': out_data.get('mask'),
+                                'mask': out_data.get('mask'),  # Alias for old port name
+                                '_data': out_data
+                            }
+
                         elif ntype == 'frame_average':
-                            current_frame, current_data = self._stream_frame_average(
+                            # Pass mask if available
+                            if current_mask is not None:
+                                inputs['_mask'] = current_mask
+                            out_frame, out_data = self._stream_frame_average(
                                 current_frame, current_data, state, params, inputs
                             )
+                            frame_outputs[nid] = {'video_out': out_frame, '_data': out_data}
+
                         elif ntype == 'video_output':
                             self._stream_video_output(
                                 current_frame, current_data, state, params, frame_count == 0
                             )
+                            frame_outputs[nid] = {'_data': current_data}
+
                         elif ntype == 'clahe':
-                            current_frame, current_data = self._stream_clahe(
+                            out_frame, out_data = self._stream_clahe(
                                 current_frame, current_data, state, params
                             )
+                            frame_outputs[nid] = {'video_out': out_frame, 'image_out': out_frame, '_data': out_data}
+
                         elif ntype == 'gamma':
-                            current_frame, current_data = self._stream_gamma(
+                            out_frame, out_data = self._stream_gamma(
                                 current_frame, current_data, state, params, inputs
                             )
+                            # gamma can also process mask
+                            out_mask = None
+                            if current_mask is not None:
+                                out_mask = current_mask  # Mask passes through unchanged
+                            frame_outputs[nid] = {
+                                'video_out': out_frame,
+                                'image_out': out_frame,
+                                'mask_out': out_mask,
+                                '_data': out_data
+                            }
+
                     except Exception as ex:
                         errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
                         self._log(f"  ✗ Error in {ntype}: {ex}")
+                        import traceback
+                        traceback.print_exc()
                         return
 
                 frame_count += 1
@@ -1081,7 +1375,10 @@ class GraphExecutor:
         self._log(f"  Streamed {frame_count} frames in {stream_elapsed:.2f}s ({fps:.1f} fps)")
 
         # Finalize each node and store outputs
-        for nid in chain[1:]:
+        for nid in chain_nodes:
+            if nid == root_id:
+                continue
+
             state = chain_state[nid]
             ntype = state['type']
             params = state['params']
@@ -1120,7 +1417,7 @@ class GraphExecutor:
 
                 elif ntype == 'apply_transform':
                     # No persistent output needed - frames already passed through
-                    self.outputs[nid] = {'video_out': None, 'mask': None}
+                    self.outputs[nid] = {'video_out': None, 'mask_out': None, 'mask': None}
                     self._log(f"  ✓ apply_transform complete")
 
                 elif ntype == 'clahe':
@@ -1128,12 +1425,35 @@ class GraphExecutor:
                     self._log(f"  ✓ clahe complete")
 
                 elif ntype == 'gamma':
-                    self.outputs[nid] = {'video_out': None, 'mask_out': None}
+                    self.outputs[nid] = {'video_out': None, 'image_out': None, 'mask_out': None}
                     self._log(f"  ✓ gamma complete")
 
             except Exception as ex:
                 errors.append({'node_id': nid, 'type': ntype, 'error': str(ex)})
                 self._log(f"  ✗ Error finalizing {ntype}: {ex}")
+
+    def _describe_chain(self, chain: dict, nodes: dict) -> str:
+        """Create a human-readable description of a streaming chain."""
+        chain_nodes = chain['nodes']
+        video_edges = chain.get('video_edges', [])
+
+        if len(chain_nodes) <= 4:
+            return ' → '.join(self._get_node_type(nodes[nid]) for nid in chain_nodes)
+
+        # For longer chains, show branching structure
+        # Find nodes with multiple outputs
+        out_count = {}
+        for src, tgt, _, _ in video_edges:
+            out_count[src] = out_count.get(src, 0) + 1
+
+        desc_parts = []
+        for nid in chain_nodes:
+            ntype = self._get_node_type(nodes[nid])
+            if out_count.get(nid, 0) > 1:
+                ntype = f"{ntype}[→{out_count[nid]}]"
+            desc_parts.append(ntype)
+
+        return ' → '.join(desc_parts)
 
     def _stream_feature_tracker(self, frame, data, state, params, inputs):
         """Process one frame through feature tracker."""
@@ -1153,7 +1473,7 @@ class GraphExecutor:
             state['initial_roi'] = roi
 
             # Initialize preview video writer if path is set
-            preview_path = params.get('preview_path', '').strip()
+            preview_path = _ensure_video_extension(params.get('preview_path', '').strip())
             if preview_path:
                 h, w = frame.shape[:2]
                 fps = data.get('props').fps if data.get('props') else 30
@@ -1218,7 +1538,7 @@ class GraphExecutor:
             state['initial_roi2'] = roi2
 
             # Initialize preview video writer if path is set
-            preview_path = params.get('preview_path', '').strip()
+            preview_path = _ensure_video_extension(params.get('preview_path', '').strip())
             if preview_path:
                 h, w = frame.shape[:2]
                 fps = data.get('props').fps if data.get('props') else 30
@@ -1289,7 +1609,8 @@ class GraphExecutor:
         import numpy as np
         import math
 
-        transforms = inputs.get('transforms', {}).get('transforms', {})
+        transform_input = inputs.get('transforms') or {}
+        transforms = transform_input.get('transforms', {})
         frame_num = data['frame_num']
         t = transforms.get(frame_num)
 
@@ -1361,9 +1682,13 @@ class GraphExecutor:
 
         state['accumulator'] += frame.astype(np.float64)
 
-        # Use mask if provided, otherwise compute from luminance
-        if 'mask' in data and data['mask'] is not None:
-            state['alpha_accumulator'] += data['mask'].astype(np.float64) / 255.0
+        # Use mask if provided (from data['mask'] or inputs['_mask']), otherwise compute from luminance
+        mask = data.get('mask') if data.get('mask') is not None else inputs.get('_mask')
+        if mask is not None:
+            # Handle multi-channel mask (take first channel)
+            if mask.ndim == 3:
+                mask = mask[:, :, 0]
+            state['alpha_accumulator'] += mask.astype(np.float64) / 255.0
         else:
             frame_f = frame.astype(np.float32) / 255.0
             alpha = np.power(np.clip(frame_f.mean(axis=2) * 255 / 16.0, 0, 1), 4)
@@ -1404,9 +1729,12 @@ class GraphExecutor:
     def _stream_video_output(self, frame, data, state, params, is_first):
         """Write one frame to video output."""
         import cv2
+        from pathlib import Path
 
         if is_first:
-            filepath = params.get('filepath', 'output.mp4').strip()
+            filepath = self._resolve_path(params.get('filepath', 'output.mp4').strip())
+            # Ensure parent directory exists
+            Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             h, w = frame.shape[:2]
             fps = data['props'].fps if data.get('props') else 30
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -1474,12 +1802,13 @@ class GraphExecutor:
         state['frame_count'] += 1
         return frame_corrected, data
 
-    def _get_chain_dependencies(self, chain: list, nodes: dict, edges: list) -> set:
+    def _get_chain_dependencies(self, chain: dict, nodes: dict, edges: list) -> set:
         """Get all non-video dependencies for a streaming chain."""
-        chain_set = set(chain)
+        chain_nodes = chain.get('nodes', [])
+        chain_set = set(chain_nodes)
         dependencies = set()
 
-        for nid in chain:
+        for nid in chain_nodes:
             for e in edges:
                 if e['target'] == nid:
                     src = e['source']
@@ -1492,6 +1821,11 @@ class GraphExecutor:
     def execute(self, graph: dict) -> dict:
         import time
         exec_start = time.time()
+
+        # Extract project directory
+        self.project_dir = graph.get('projectDir', '').strip() or None
+        if self.project_dir:
+            self._log(f"Project directory: {self.project_dir}")
 
         nodes = {n['id']: n for n in graph.get('nodes', [])}
         edges = graph.get('edges', [])
@@ -1520,7 +1854,7 @@ class GraphExecutor:
         # Track which nodes belong to which chains (a node can be in multiple chains if it's the start)
         node_to_chains = {}  # node_id -> list of chain indices
         for i, chain in enumerate(streaming_chains):
-            for nid in chain:
+            for nid in chain['nodes']:
                 if nid not in node_to_chains:
                     node_to_chains[nid] = []
                 node_to_chains[nid].append(i)
@@ -1532,30 +1866,31 @@ class GraphExecutor:
 
         self._log(f"Found {len(streaming_chains)} streaming chain(s)")
         for i, chain in enumerate(streaming_chains):
-            chain_types = [self._get_node_type(nodes[nid]) for nid in chain]
-            self._log(f"  Chain {i}: {' → '.join(chain_types)}")
+            chain_desc = self._describe_chain(chain, nodes)
+            self._log(f"  Chain {i}: {chain_desc}")
 
         # Pre-populate video_input outputs with props (needed by stabilizer etc. before streaming runs)
         from vdg.core.video import get_video_properties
         from pathlib import Path
         video_inputs_loaded = set()
         for chain in streaming_chains:
-            source_node = nodes[chain[0]]
+            root_id = chain['root']
+            source_node = nodes[root_id]
             source_type = self._get_node_type(source_node)
-            if source_type == 'video_input' and chain[0] not in video_inputs_loaded:
+            if source_type == 'video_input' and root_id not in video_inputs_loaded:
                 params = source_node.get('data', {}).get('params', {}) or source_node.get('params', {})
-                filepath = params.get('filepath', '').strip()
+                filepath = self._resolve_path(params.get('filepath', '').strip())
                 if filepath and Path(filepath).exists():
                     props = get_video_properties(filepath)
                     first_frame = params.get('first_frame', 1)
                     last_frame = params.get('last_frame', -1)
                     last_frame = None if last_frame == -1 else last_frame
-                    self.outputs[chain[0]] = {
+                    self.outputs[root_id] = {
                         'video_out': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
                         'props': props
                     }
-                    video_inputs_loaded.add(chain[0])
-                    self._log(f"  Pre-loaded props for {chain[0]}: {props.width}x{props.height}")
+                    video_inputs_loaded.add(root_id)
+                    self._log(f"  Pre-loaded props for {root_id}: {props.width}x{props.height}")
 
         errors = []
 
@@ -1573,7 +1908,7 @@ class GraphExecutor:
 
             # Check if this node starts any pending streaming chains
             chains_starting_here = [i for i in node_to_chains.get(nid, [])
-                                    if i in pending_chains and streaming_chains[i][0] == nid]
+                                    if i in pending_chains and streaming_chains[i]['root'] == nid]
 
             if chains_starting_here:
                 # Try to execute each chain starting at this node
@@ -1584,7 +1919,7 @@ class GraphExecutor:
 
                     if deps_satisfied:
                         self._execute_streaming_chain(chain, nodes, edges, errors)
-                        executed.update(chain)
+                        executed.update(chain['nodes'])
                         executed_chains.add(chain_idx)
                         pending_chains.discard(chain_idx)
 
@@ -1593,7 +1928,7 @@ class GraphExecutor:
                     continue
 
             # Check if this node is part of any pending chain (not start)
-            in_pending_chain = any(i in pending_chains and streaming_chains[i][0] != nid
+            in_pending_chain = any(i in pending_chains and streaming_chains[i]['root'] != nid
                                    for i in node_to_chains.get(nid, []))
             if in_pending_chain:
                 # Part of a chain but not the start - skip, will be handled by chain
@@ -1636,17 +1971,17 @@ class GraphExecutor:
                 deps_satisfied = all(dep in executed for dep in deps)
                 if deps_satisfied:
                     self._execute_streaming_chain(chain, nodes, edges, errors)
-                    executed.update(chain)
+                    executed.update(chain['nodes'])
                     executed_chains.add(chain_idx)
                     pending_chains.discard(chain_idx)
 
         # Execute any remaining pending chains (shouldn't happen if deps are correct)
         for chain_idx in list(pending_chains):
             chain = streaming_chains[chain_idx]
-            if chain[0] not in executed:
-                self._log(f"  ⚠ Executing deferred chain starting at {chain[0]}")
+            if chain['root'] not in executed:
+                self._log(f"  ⚠ Executing deferred chain starting at {chain['root']}")
                 self._execute_streaming_chain(chain, nodes, edges, errors)
-                executed.update(chain)
+                executed.update(chain['nodes'])
 
         total_elapsed = time.time() - exec_start
         self._log(f"\n{'─' * 40}")
@@ -1668,7 +2003,7 @@ def handle_video_input(inputs: dict, params: dict, executor) -> dict:
     from vdg.core.video import VideoReader, get_video_properties
     from pathlib import Path
 
-    filepath = params.get('filepath', '').strip()
+    filepath = executor._resolve_path(params.get('filepath', '').strip())
     if not filepath:
         raise ValueError("No video file specified")
 
@@ -1704,7 +2039,7 @@ def handle_image_input(inputs: dict, params: dict, executor) -> dict:
     import cv2
     from pathlib import Path
 
-    filepath = params.get('filepath', '').strip()
+    filepath = executor._resolve_path(params.get('filepath', '').strip())
     if not filepath:
         raise ValueError("No image file specified")
 
@@ -1765,7 +2100,7 @@ def handle_feature_tracker(inputs: dict, params: dict, executor) -> dict:
 
     track_data = {}
     preview_writer = None
-    preview_path = params.get('preview_path', '').strip()
+    preview_path = _ensure_video_extension(params.get('preview_path', '').strip())
 
     # Check if we have a video reference (streaming) or pre-loaded frames
     if isinstance(video_data, dict) and video_data.get('filepath'):
@@ -1884,7 +2219,7 @@ def handle_feature_tracker_2p(inputs: dict, params: dict, executor) -> dict:
     track_data1 = {}
     track_data2 = {}
     preview_writer = None
-    preview_path = params.get('preview_path', '').strip()
+    preview_path = _ensure_video_extension(params.get('preview_path', '').strip())
 
     # Check if we have a video reference (streaming) or pre-loaded frames
     if isinstance(video_data, dict) and video_data.get('filepath'):
@@ -2438,12 +2773,13 @@ def handle_image_output(inputs: dict, params: dict, executor) -> dict:
     if image is None:
         raise ValueError("No image to save")
 
-    filepath = params.get('filepath', '').strip()
-    if not filepath:
-        filepath = 'output.png'
+    filepath = executor._resolve_path(params.get('filepath', '').strip() or 'output.png')
+
+    # Ensure parent directory exists
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     # Ensure valid extension
-    path = Path(filepath)
     if not path.suffix or path.suffix.lower() not in ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.exr']:
         filepath = str(path.with_suffix('.png'))
         executor._log(f"  Warning: Added .png extension: {filepath}")
@@ -2487,7 +2823,11 @@ def handle_video_output(inputs: dict, params: dict, executor) -> dict:
     if not actual_frames:
         raise ValueError("No frames to save")
 
-    filepath = params.get('filepath', 'output.mp4').strip()
+    filepath = executor._resolve_path(params.get('filepath', 'output.mp4').strip())
+
+    # Ensure parent directory exists
+    from pathlib import Path
+    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
 
     # Get dimensions from first frame
     h, w = actual_frames[0].shape[:2]
@@ -2510,7 +2850,7 @@ def handle_track_input(inputs: dict, params: dict, executor) -> dict:
     from vdg.tracking.track_io import read_crv_file
     from pathlib import Path
 
-    filepath = params.get('filepath', '').strip()
+    filepath = executor._resolve_path(params.get('filepath', '').strip())
     if not filepath:
         raise ValueError("No track file specified")
 
@@ -2543,7 +2883,11 @@ def handle_track_output(inputs: dict, params: dict, executor) -> dict:
     if not track_data:
         raise ValueError("No track data to save")
 
-    filepath = params.get('filepath', 'track.crv').strip()
+    filepath = executor._resolve_path(params.get('filepath', 'track.crv').strip())
+
+    # Ensure parent directory exists
+    from pathlib import Path
+    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
 
     # Get dimensions from props
     if props and hasattr(props, 'width'):
