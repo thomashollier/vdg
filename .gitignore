@@ -75,6 +75,7 @@ venv.bak/
 *.MOV
 *.MP4
 *.png
+!nodebased_ui.png
 *.jpg
 *.crv
 process_config.json
