@@ -2818,10 +2818,11 @@ def handle_frame_average(inputs: dict, params: dict, executor) -> dict:
         alpha_3ch = np.clip(alpha_3ch, 0.001, 1.0)  # Avoid division by zero
         result = result / alpha_3ch
 
-    result = np.clip(result, 0, 255).astype(np.uint8)
-    alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
+    # Output as float32 in 0-1 range to preserve precision for downstream processing
+    result = np.clip(result / 255.0, 0, 1).astype(np.float32)
+    alpha = np.clip(alpha, 0, 1).astype(np.float32)
 
-    executor._log(f"  Output: {result.shape[1]}x{result.shape[0]}")
+    executor._log(f"  Output: {result.shape[1]}x{result.shape[0]}, float32 (0-1 range)")
 
     return {'image_out': result, 'alpha_out': alpha}
 
@@ -2851,10 +2852,15 @@ def handle_image_output(inputs: dict, params: dict, executor) -> dict:
 
     bit_depth = params.get('bit_depth', '16')
 
-    if bit_depth == '16':
-        # Convert to 16-bit
-        if image.dtype == np.uint8:
-            image = (image.astype(np.uint16) * 257)  # Scale 0-255 to 0-65535
+    # Convert from float32 (0-1 range) to integer format for saving
+    if image.dtype == np.float32 or image.dtype == np.float64:
+        if bit_depth == '16':
+            image = np.clip(image * 65535, 0, 65535).astype(np.uint16)
+        else:
+            image = np.clip(image * 255, 0, 255).astype(np.uint8)
+    elif bit_depth == '16' and image.dtype == np.uint8:
+        # Convert 8-bit to 16-bit
+        image = (image.astype(np.uint16) * 257)  # Scale 0-255 to 0-65535
 
     success = cv2.imwrite(filepath, image)
     if not success:

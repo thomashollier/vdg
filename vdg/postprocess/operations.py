@@ -9,12 +9,12 @@ To add a new operation:
 2. Register it with the @register_operation decorator
 
 All operations receive:
-- image: RGB image as numpy array (uint8 or uint16, HxWx3)
-- alpha: Alpha/mask image as numpy array (uint8 or uint16, HxW or HxWx1)
+- image: RGB image as numpy array (uint8, uint16, or float32 0-1 range)
+- alpha: Alpha/mask image as numpy array (uint8, uint16, or float32 0-1 range)
 - **params: Additional parameters from the node
 
-All operations must return:
-- A single RGB image as numpy array (same dtype as input)
+All operations return:
+- A single RGB image as float32 array (0-1 range) for maximum precision
 """
 
 import numpy as np
@@ -54,6 +54,38 @@ def apply_operation(name: str, image: np.ndarray, alpha: np.ndarray, **params) -
 
 
 # =============================================================================
+# Helper Functions
+# =============================================================================
+
+def _normalize_image(image: np.ndarray) -> np.ndarray:
+    """Normalize any image format to float32 in 0-1 range."""
+    if image.dtype == np.float32 or image.dtype == np.float64:
+        # Already float, assume 0-1 range
+        return image.astype(np.float32)
+    elif image.dtype == np.uint16:
+        return image.astype(np.float32) / 65535.0
+    else:
+        # Assume uint8
+        return image.astype(np.float32) / 255.0
+
+
+def _normalize_alpha(alpha: np.ndarray) -> np.ndarray:
+    """Normalize alpha to single-channel float32 in 0-1 range."""
+    # First normalize to float
+    if alpha.dtype == np.float32 or alpha.dtype == np.float64:
+        alpha_norm = alpha.astype(np.float32)
+    elif alpha.dtype == np.uint16:
+        alpha_norm = alpha.astype(np.float32) / 65535.0
+    else:
+        alpha_norm = alpha.astype(np.float32) / 255.0
+
+    # Get single channel (red channel if multi-channel)
+    if alpha_norm.ndim == 3:
+        return alpha_norm[:, :, 0]
+    return alpha_norm
+
+
+# =============================================================================
 # Built-in Operations
 # =============================================================================
 
@@ -63,28 +95,10 @@ def comp_on_white(image: np.ndarray, alpha: np.ndarray, **params) -> np.ndarray:
     Composite premultiplied RGB over white background.
 
     Takes the red channel from alpha as the compositing alpha.
+    Returns float32 in 0-1 range.
     """
-    # Normalize alpha to 0-1 range
-    if alpha.dtype == np.uint16:
-        alpha_norm = alpha.astype(np.float32) / 65535.0
-    else:
-        alpha_norm = alpha.astype(np.float32) / 255.0
-
-    # Get single channel alpha (red channel if multi-channel)
-    if alpha_norm.ndim == 3:
-        alpha_1ch = alpha_norm[:, :, 0]
-    else:
-        alpha_1ch = alpha_norm
-
-    # Normalize image to 0-1
-    if image.dtype == np.uint16:
-        img_norm = image.astype(np.float32) / 65535.0
-        max_val = 65535
-        out_dtype = np.uint16
-    else:
-        img_norm = image.astype(np.float32) / 255.0
-        max_val = 255
-        out_dtype = np.uint8
+    img_norm = _normalize_image(image)
+    alpha_1ch = _normalize_alpha(alpha)
 
     # Create RGBA and composite over white
     alpha_3ch = np.dstack([alpha_1ch, alpha_1ch, alpha_1ch])
@@ -93,9 +107,7 @@ def comp_on_white(image: np.ndarray, alpha: np.ndarray, **params) -> np.ndarray:
     # Over operation: foreground + background * (1 - alpha)
     result = img_norm + white * (1 - alpha_3ch)
 
-    # Clamp and convert back
-    result = np.clip(result * max_val, 0, max_val).astype(out_dtype)
-    return result
+    return np.clip(result, 0, 1).astype(np.float32)
 
 
 @register_operation("comp_on_black", "Composite image over black background using alpha")
@@ -104,13 +116,10 @@ def comp_on_black(image: np.ndarray, alpha: np.ndarray, **params) -> np.ndarray:
     Composite premultiplied RGB over black background.
 
     Essentially just clamps the image values.
+    Returns float32 in 0-1 range.
     """
-    if image.dtype == np.uint16:
-        max_val = 65535
-    else:
-        max_val = 255
-
-    return np.clip(image, 0, max_val)
+    img_norm = _normalize_image(image)
+    return np.clip(img_norm, 0, 1).astype(np.float32)
 
 
 @register_operation("refine_alpha", "Gamma + contrast + blur + power on alpha, composite on white")
@@ -128,20 +137,14 @@ def refine_alpha(image: np.ndarray, alpha: np.ndarray,
 
     Set gamma=1 to skip gamma. Set contrast=0 to skip contrast. Set blur_size=0 to skip blur.
     Set power=1 to skip power curve.
+
+    Returns float32 in 0-1 range.
     """
     from scipy.ndimage import gaussian_filter
 
-    # Normalize alpha
-    if alpha.dtype == np.uint16:
-        alpha_norm = alpha.astype(np.float32) / 65535.0
-    else:
-        alpha_norm = alpha.astype(np.float32) / 255.0
-
-    # Get single channel
-    if alpha_norm.ndim == 3:
-        alpha_1ch = alpha_norm[:, :, 0].copy()
-    else:
-        alpha_1ch = alpha_norm.copy()
+    img_norm = _normalize_image(image)
+    alpha_1ch = _normalize_alpha(alpha).copy()
+    original_alpha = _normalize_alpha(alpha)
 
     # 1. Apply inverse gamma (skip if gamma == 1)
     if gamma != 1.0:
@@ -165,18 +168,7 @@ def refine_alpha(image: np.ndarray, alpha: np.ndarray,
         alpha_1ch = np.power(alpha_1ch, power)
         alpha_1ch = np.clip(alpha_1ch, 0, 1)
 
-    # Normalize image
-    if image.dtype == np.uint16:
-        img_norm = image.astype(np.float32) / 65535.0
-        max_val = 65535
-        out_dtype = np.uint16
-    else:
-        img_norm = image.astype(np.float32) / 255.0
-        max_val = 255
-        out_dtype = np.uint8
-
     # Unpremultiply with original alpha
-    original_alpha = alpha_norm[:, :, 0] if alpha_norm.ndim == 3 else alpha_norm
     original_alpha = np.clip(original_alpha, 0.001, 1.0)
     rgb_straight = img_norm / np.dstack([original_alpha] * 3)
     rgb_straight = np.clip(rgb_straight, 0, 1)
@@ -189,8 +181,7 @@ def refine_alpha(image: np.ndarray, alpha: np.ndarray,
     white = np.ones_like(rgb_premult)
     result = rgb_premult + white * (1 - alpha_3ch)
 
-    result = np.clip(result * max_val, 0, max_val).astype(out_dtype)
-    return result
+    return np.clip(result, 0, 1).astype(np.float32)
 
 
 @register_operation("divide_alpha", "Divide RGB by alpha (unpremultiply, on black)")
@@ -198,37 +189,19 @@ def divide_alpha(image: np.ndarray, alpha: np.ndarray, **params) -> np.ndarray:
     """
     Divide RGB by alpha to unpremultiply the image.
     Result is on black background.
-    """
-    # Normalize alpha
-    if alpha.dtype == np.uint16:
-        alpha_norm = alpha.astype(np.float32) / 65535.0
-    else:
-        alpha_norm = alpha.astype(np.float32) / 255.0
 
-    # Get single channel
-    if alpha_norm.ndim == 3:
-        alpha_1ch = alpha_norm[:, :, 0]
-    else:
-        alpha_1ch = alpha_norm
+    Returns float32 in 0-1 range.
+    """
+    img_norm = _normalize_image(image)
+    alpha_1ch = _normalize_alpha(alpha)
 
     # Clamp to avoid division by zero
     alpha_1ch = np.clip(alpha_1ch, 0.001, 1.0)
 
-    # Normalize image
-    if image.dtype == np.uint16:
-        img_norm = image.astype(np.float32) / 65535.0
-        max_val = 65535
-        out_dtype = np.uint16
-    else:
-        img_norm = image.astype(np.float32) / 255.0
-        max_val = 255
-        out_dtype = np.uint8
-
     alpha_3ch = np.dstack([alpha_1ch, alpha_1ch, alpha_1ch])
     result = img_norm / alpha_3ch
 
-    result = np.clip(result * max_val, 0, max_val).astype(out_dtype)
-    return result
+    return np.clip(result, 0, 1).astype(np.float32)
 
 
 @register_operation("unpremult_on_white", "Unpremultiply then add inverse alpha for white background")
@@ -237,28 +210,11 @@ def unpremult_on_white(image: np.ndarray, alpha: np.ndarray, **params) -> np.nda
     Divide RGB by alpha, divide alpha by itself, then: RGB + (1 - divided_alpha)
 
     This gives unpremultiplied colors where there's content, white where there isn't.
+
+    Returns float32 in 0-1 range.
     """
-    # Normalize alpha
-    if alpha.dtype == np.uint16:
-        alpha_norm = alpha.astype(np.float32) / 65535.0
-    else:
-        alpha_norm = alpha.astype(np.float32) / 255.0
-
-    # Get single channel
-    if alpha_norm.ndim == 3:
-        alpha_1ch = alpha_norm[:, :, 0]
-    else:
-        alpha_1ch = alpha_norm
-
-    # Normalize image
-    if image.dtype == np.uint16:
-        img_norm = image.astype(np.float32) / 65535.0
-        max_val = 65535
-        out_dtype = np.uint16
-    else:
-        img_norm = image.astype(np.float32) / 255.0
-        max_val = 255
-        out_dtype = np.uint8
+    img_norm = _normalize_image(image)
+    alpha_1ch = _normalize_alpha(alpha)
 
     # Divide RGB by alpha (with safe division)
     alpha_safe = np.clip(alpha_1ch, 0.001, 1.0)
@@ -273,5 +229,4 @@ def unpremult_on_white(image: np.ndarray, alpha: np.ndarray, **params) -> np.nda
     divided_alpha_3ch = np.dstack([divided_alpha, divided_alpha, divided_alpha])
     result = rgb_divided + (1.0 - divided_alpha_3ch)
 
-    result = np.clip(result * max_val, 0, max_val).astype(out_dtype)
-    return result
+    return np.clip(result, 0, 1).astype(np.float32)
