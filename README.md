@@ -2,6 +2,8 @@
 
 A modular Python framework for video point tracking, stabilization, frame averaging, and post-processing with a web-based visual node editor.
 
+![Node Editor UI](nodebased_ui.png)
+
 ## Features
 
 - **Web Node Editor**: Visual graph-based workflow editor with real-time execution
