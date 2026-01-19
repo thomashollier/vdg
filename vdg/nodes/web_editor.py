@@ -24,6 +24,9 @@ except ImportError:
     print("Install dependencies: pip install fastapi uvicorn")
     raise
 
+# Global abort flag for cancelling running jobs
+_abort_flag = False
+
 
 def _ensure_video_extension(path: str) -> str:
     """Ensure preview path has a video extension, not an image extension.
@@ -325,13 +328,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .node-btn { display: block; width: 100%; padding: 6px 10px; margin: 3px 0; background: #252545; color: #fff; border: 1px solid #333; border-radius: 4px; cursor: grab; text-align: left; font-size: 12px; }
         .node-btn:hover { background: #2d2d5a; border-color: #4fc3f7; }
         .canvas-area { flex: 1; position: relative; overflow: hidden; }
-        #canvas { position: absolute; width: 5000px; height: 5000px; background-image: radial-gradient(#333 1px, transparent 1px); background-size: 20px 20px; z-index: 1; }
-        #svg-layer { position: absolute; width: 5000px; height: 5000px; z-index: 2; pointer-events: none; }
+        #canvas { position: absolute; left: -5000px; top: -5000px; width: 15000px; height: 15000px; background-image: radial-gradient(#333 1px, transparent 1px); background-size: 20px 20px; z-index: 1; transform-origin: 0 0; }
+        #svg-layer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
         #svg-layer path { pointer-events: stroke; }
         .toolbar { position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; z-index: 100; }
         .toolbar button { padding: 8px 14px; background: #4CAF50; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
         .toolbar button:hover { filter: brightness(1.1); }
         .toolbar button.sec { background: #555; }
+        .toolbar button.abort { background: #c62828; }
+        .toolbar button.small { padding: 8px 10px; min-width: 28px; }
+        .zoom-controls { display: flex; align-items: center; gap: 4px; margin-left: 8px; padding-left: 8px; border-left: 1px solid #444; }
+        #zoom-level { font-size: 11px; min-width: 40px; text-align: center; color: #aaa; }
         .node { position: absolute; min-width: 140px; background: #252545; border: 2px solid #444; border-radius: 6px; cursor: move; user-select: none; font-size: 11px; z-index: 3; }
         .node.selected { border-color: #4fc3f7; box-shadow: 0 0 15px rgba(79,195,247,0.3); }
         .node-hdr { padding: 6px 10px; border-radius: 4px 4px 0 0; font-weight: 600; font-size: 11px; }
@@ -391,10 +398,16 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             <svg id="svg-layer"></svg>
             <div id="canvas"></div>
             <div class="toolbar">
-                <button onclick="execute()">▶ Run</button>
+                <button id="run-btn" onclick="execute()">▶ Run</button>
+                <button id="abort-btn" class="abort" onclick="abort()" style="display:none;">⏹ Abort</button>
                 <button class="sec" onclick="save()">Save</button>
                 <button class="sec" onclick="load()">Load</button>
                 <button class="sec" onclick="clear()">Clear</button>
+                <span class="zoom-controls">
+                    <button class="sec small" onclick="zoomOut()">−</button>
+                    <span id="zoom-level">100%</span>
+                    <button class="sec small" onclick="zoomIn()">+</button>
+                </span>
             </div>
             <div class="status" id="status">Drag nodes to canvas</div>
         </div>
@@ -417,6 +430,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 const DEFS = ''' + json.dumps(get_nodes_json()) + ''';
 let nodes = [], conns = [], sel = null, dragN = null, dragC = null, nid = 0;
 let off = {x: 0, y: 0}, pan = {x: 0, y: 0}, panning = false, panStart = {};
+let zoom = 1;
+const ZOOM_MIN = 0.25, ZOOM_MAX = 2, ZOOM_STEP = 0.1;
+const CANVAS_OFFSET = 5000;  // Canvas/SVG positioned at -5000,-5000
 let projectDir = '';
 
 async function validateProjectDir() {
@@ -471,7 +487,12 @@ function init() {
     area.ondrop = e => {
         e.preventDefault();
         const t = e.dataTransfer.getData('t');
-        if (t) addNode(t, e.clientX - area.getBoundingClientRect().left - pan.x, e.clientY - area.getBoundingClientRect().top - pan.y);
+        if (t) {
+            const rect = area.getBoundingClientRect();
+            const x = (e.clientX - rect.left - pan.x) / zoom;
+            const y = (e.clientY - rect.top - pan.y) / zoom;
+            addNode(t, x, y);
+        }
     };
     area.onmousedown = e => {
         if (e.target === area || e.target.id === 'canvas') {
@@ -479,15 +500,66 @@ function init() {
         }
     };
     area.onmousemove = e => {
-        if (panning) { pan.x = e.clientX - panStart.x; pan.y = e.clientY - panStart.y; updTrans(); }
+        if (panning) { pan.x = e.clientX - panStart.x; pan.y = e.clientY - panStart.y; updTrans(); drawConns(); }
         if (dragC) updTemp(e);
     };
     area.onmouseup = () => { panning = false; if (dragC) cancelConn(); };
+
+    // Zoom with mouse wheel
+    area.onwheel = e => {
+        e.preventDefault();
+        const rect = area.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        // Mouse position in canvas coordinates before zoom
+        const canvasX = (mx - pan.x) / zoom;
+        const canvasY = (my - pan.y) / zoom;
+
+        // Apply zoom
+        const oldZoom = zoom;
+        if (e.deltaY < 0) zoom = Math.min(ZOOM_MAX, zoom + ZOOM_STEP);
+        else zoom = Math.max(ZOOM_MIN, zoom - ZOOM_STEP);
+
+        // Adjust pan to keep mouse position fixed
+        pan.x = mx - canvasX * zoom;
+        pan.y = my - canvasY * zoom;
+
+        updTrans();
+        drawConns();
+        status('Zoom: ' + Math.round(zoom * 100) + '%');
+    };
+
+    // Apply initial transform
+    updTrans();
 }
 
 function updTrans() {
-    document.getElementById('canvas').style.transform = 'translate(' + pan.x + 'px,' + pan.y + 'px)';
-    document.getElementById('svg-layer').style.transform = 'translate(' + pan.x + 'px,' + pan.y + 'px)';
+    // Canvas positioned at -5000,-5000, needs offset compensation
+    const tx = pan.x + CANVAS_OFFSET, ty = pan.y + CANVAS_OFFSET;
+    document.getElementById('canvas').style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + zoom + ')';
+    // SVG is not transformed - paths are drawn in screen coordinates
+    document.getElementById('zoom-level').textContent = Math.round(zoom * 100) + '%';
+}
+
+function zoomIn() {
+    const area = document.getElementById('canvas-area');
+    const rect = area.getBoundingClientRect();
+    const cx = rect.width / 2, cy = rect.height / 2;
+    const canvasX = (cx - pan.x) / zoom, canvasY = (cy - pan.y) / zoom;
+    zoom = Math.min(ZOOM_MAX, zoom + ZOOM_STEP);
+    pan.x = cx - canvasX * zoom; pan.y = cy - canvasY * zoom;
+    updTrans(); drawConns();
+}
+
+function zoomOut() {
+    const area = document.getElementById('canvas-area');
+    const rect = area.getBoundingClientRect();
+    const cx = rect.width / 2, cy = rect.height / 2;
+    const canvasX = (cx - pan.x) / zoom, canvasY = (cy - pan.y) / zoom;
+    zoom = Math.max(ZOOM_MIN, zoom - ZOOM_STEP);
+    pan.x = cx - canvasX * zoom; pan.y = cy - canvasY * zoom;
+    updTrans(); drawConns();
 }
 
 function addNode(t, x, y) {
@@ -513,10 +585,10 @@ function render(n) {
     
     el.onmousedown = e => {
         if (e.target.classList.contains('dot')) { startConn(e.target); e.stopPropagation(); return; }
-        select(n); dragN = n; off = {x: e.clientX - n.x - pan.x, y: e.clientY - n.y - pan.y}; e.stopPropagation();
+        select(n); dragN = n; off = {x: e.clientX - n.x * zoom - pan.x, y: e.clientY - n.y * zoom - pan.y}; e.stopPropagation();
     };
     document.addEventListener('mousemove', e => {
-        if (dragN === n) { n.x = e.clientX - off.x - pan.x; n.y = e.clientY - off.y - pan.y; el.style.left = n.x + 'px'; el.style.top = n.y + 'px'; drawConns(); }
+        if (dragN === n) { n.x = (e.clientX - off.x - pan.x) / zoom; n.y = (e.clientY - off.y - pan.y) / zoom; el.style.left = n.x + 'px'; el.style.top = n.y + 'px'; drawConns(); }
     });
     document.addEventListener('mouseup', () => { dragN = null; });
     el.querySelectorAll('.dot').forEach(dot => { dot.onmouseup = () => { if (dragC) endConn(dot); }; });
@@ -581,9 +653,13 @@ function updTemp(e) {
     const dot = document.querySelector('[data-n="' + dragC.sn + '"][data-p="' + dragC.sp + '"]');
     if (!dot) return;
     const r = dot.getBoundingClientRect(), ar = document.getElementById('canvas-area').getBoundingClientRect();
-    const x1 = r.left + 4 - ar.left - pan.x, y1 = r.top + 4 - ar.top - pan.y;
-    const x2 = e.clientX - ar.left - pan.x, y2 = e.clientY - ar.top - pan.y;
-    t.setAttribute('d', 'M' + x1 + ' ' + y1 + ' C' + (x1+50) + ' ' + y1 + ',' + (x2-50) + ' ' + y2 + ',' + x2 + ' ' + y2);
+    // Draw in screen coordinates relative to canvas-area
+    const x1 = r.left + 4 - ar.left;
+    const y1 = r.top + 4 - ar.top;
+    const x2 = e.clientX - ar.left;
+    const y2 = e.clientY - ar.top;
+    const cx = 50 * zoom;
+    t.setAttribute('d', 'M' + x1 + ' ' + y1 + ' C' + (x1+cx) + ' ' + y1 + ',' + (x2-cx) + ' ' + y2 + ',' + x2 + ' ' + y2);
 }
 function remTemp() { document.querySelector('.conn-temp')?.remove(); }
 
@@ -595,9 +671,13 @@ function drawConns() {
         const d2 = document.querySelector('[data-n="' + c.tn + '"][data-p="' + c.tp + '"]');
         if (!d1 || !d2) return;
         const r1 = d1.getBoundingClientRect(), r2 = d2.getBoundingClientRect();
-        const x1 = r1.left + 4 - ar.left - pan.x, y1 = r1.top + 4 - ar.top - pan.y;
-        const x2 = r2.left + 4 - ar.left - pan.x, y2 = r2.top + 4 - ar.top - pan.y;
-        const pathD = 'M' + x1 + ' ' + y1 + ' C' + (x1+60) + ' ' + y1 + ',' + (x2-60) + ' ' + y2 + ',' + x2 + ' ' + y2;
+        // Draw in screen coordinates relative to canvas-area
+        const x1 = r1.left + 4 - ar.left;
+        const y1 = r1.top + 4 - ar.top;
+        const x2 = r2.left + 4 - ar.left;
+        const y2 = r2.top + 4 - ar.top;
+        const cx = 60 * zoom;  // Curve control offset scales with zoom
+        const pathD = 'M' + x1 + ' ' + y1 + ' C' + (x1+cx) + ' ' + y1 + ',' + (x2-cx) + ' ' + y2 + ',' + x2 + ' ' + y2;
 
         // Visible path
         const visPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -783,7 +863,13 @@ document.addEventListener('DOMContentLoaded', () => {
     canvas.onmouseleave = () => { roiDrawing = false; };
 });
 
+let isRunning = false;
+
 async function execute() {
+    if (isRunning) return;
+    isRunning = true;
+    document.getElementById('run-btn').style.display = 'none';
+    document.getElementById('abort-btn').style.display = '';
     status('Running...');
     const g = {
         projectDir: projectDir,
@@ -793,7 +879,10 @@ async function execute() {
     try {
         const r = await fetch('/api/execute', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(g)});
         const j = await r.json();
-        if (j.success) {
+        if (j.aborted) {
+            status('Aborted');
+            alert('Execution aborted by user.\\n\\n' + j.message);
+        } else if (j.success) {
             status('Done!');
             alert('Execution complete!\\n\\n' + j.message);
         } else {
@@ -806,12 +895,53 @@ async function execute() {
     } catch (err) {
         status('Error');
         alert('Request failed: ' + err.message);
+    } finally {
+        isRunning = false;
+        document.getElementById('run-btn').style.display = '';
+        document.getElementById('abort-btn').style.display = 'none';
     }
 }
 
-function save() {
+async function abort() {
+    if (!isRunning) return;
+    status('Aborting...');
+    try {
+        await fetch('/api/abort', {method: 'POST'});
+    } catch (err) {
+        console.error('Abort request failed:', err);
+    }
+}
+
+async function save() {
     const data = {projectDir, nodes, conns};
-    const b = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    const content = JSON.stringify(data, null, 2);
+
+    // Try to use File System Access API for native save dialog
+    if (window.showSaveFilePicker) {
+        try {
+            const handle = await window.showSaveFilePicker({
+                suggestedName: 'vdg-graph.json',
+                types: [{
+                    description: 'VDG Graph',
+                    accept: {'application/json': ['.json']}
+                }]
+            });
+            const writable = await handle.createWritable();
+            await writable.write(content);
+            await writable.close();
+            status('Saved: ' + handle.name);
+            return;
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                status('Save cancelled');
+                return;
+            }
+            // Fall through to download method
+        }
+    }
+
+    // Fallback: download method
+    const b = new Blob([content], {type: 'application/json'});
     const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'vdg-graph.json'; a.click();
     status('Saved');
 }
@@ -842,9 +972,8 @@ function load() {
 function clear() {
     document.getElementById('canvas').innerHTML = '';
     document.getElementById('svg-layer').innerHTML = '';
-    nodes = []; conns = []; nid = 0; pan = {x: 0, y: 0};
-    document.getElementById('canvas').style.transform = 'translate(0px, 0px)';
-    document.getElementById('svg-layer').style.transform = 'translate(0px, 0px)';
+    nodes = []; conns = []; nid = 0; pan = {x: 0, y: 0}; zoom = 1;
+    updTrans();
     // Clear project directory
     projectDir = '';
     document.getElementById('project-dir').value = '';
@@ -936,26 +1065,51 @@ async def validate_path(path: str):
     return {"valid": True, "path": str(target)}
 
 
-@app.post("/api/execute")
-async def execute_graph(graph: dict):
-    """Execute the node graph."""
-    print("\n" + "=" * 50)
-    print("EXECUTING GRAPH")
-    print("=" * 50)
+@app.post("/api/abort")
+async def abort_execution():
+    """Abort the currently running graph execution."""
+    global _abort_flag
+    _abort_flag = True
+    print("\n⚠ ABORT REQUESTED")
+    return {"status": "abort requested"}
+
+
+def _run_graph_sync(graph: dict) -> dict:
+    """Run graph execution synchronously (called from thread pool)."""
     try:
         executor = GraphExecutor()
         result = executor.execute(graph)
-        if result['success']:
+        if result.get('aborted'):
+            print("\n⚠ Execution aborted by user")
+        elif result['success']:
             print("\n✓ Execution completed successfully")
         else:
             print("\n✗ Execution failed")
-        print("=" * 50 + "\n")
         return result
     except Exception as e:
         import traceback
         print(f"\n✗ Execution error: {e}")
-        print("=" * 50 + "\n")
         return {'success': False, 'message': str(e), 'errors': [{'node_id': 'graph', 'error': traceback.format_exc()}]}
+
+
+@app.post("/api/execute")
+async def execute_graph(graph: dict):
+    """Execute the node graph."""
+    import asyncio
+
+    global _abort_flag
+    _abort_flag = False  # Reset abort flag at start
+
+    print("\n" + "=" * 50)
+    print("EXECUTING GRAPH")
+    print("=" * 50)
+
+    # Run in thread pool so abort requests can be processed
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _run_graph_sync, graph)
+
+    print("=" * 50 + "\n")
+    return result
 
 
 class GraphExecutor:
@@ -992,6 +1146,15 @@ class GraphExecutor:
         self.outputs = {}  # node_id -> {port_name: value}
         self.log = []
         self.project_dir = None  # Project directory for relative paths
+        self.aborted = False
+
+    def _check_abort(self) -> bool:
+        """Check if abort has been requested."""
+        global _abort_flag
+        if _abort_flag and not self.aborted:
+            self.aborted = True
+            self._log("⚠ ABORT: Stopping execution...")
+        return self.aborted
 
     def _resolve_path(self, filepath: str) -> str:
         """Resolve a filepath relative to project directory.
@@ -1280,6 +1443,10 @@ class GraphExecutor:
             self._log(f"  Streaming {total_frames} frames...")
 
             for frame_num, frame in reader:
+                # Check for abort
+                if self._check_abort():
+                    break
+
                 # Track per-node outputs for this frame
                 # Each node stores: {'video_out': frame, 'mask_out': mask, ...}
                 frame_outputs = {
@@ -1963,6 +2130,10 @@ class GraphExecutor:
         pending_chains = set(range(len(streaming_chains)))  # Chain indices waiting to execute
 
         for nid in order:
+            # Check for abort
+            if self._check_abort():
+                break
+
             if nid in executed:
                 continue
 
@@ -2051,7 +2222,8 @@ class GraphExecutor:
         self._log(f"Total execution time: {total_elapsed:.2f}s")
 
         return {
-            'success': len(errors) == 0,
+            'success': len(errors) == 0 and not self.aborted,
+            'aborted': self.aborted,
             'message': '\n'.join(self.log),
             'errors': errors
         }
