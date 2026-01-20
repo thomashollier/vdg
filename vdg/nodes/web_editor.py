@@ -436,29 +436,21 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .modal-btns button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
         .modal-btns .apply { background: #4CAF50; color: #fff; }
         .modal-btns .cancel { background: #555; color: #fff; }
-        .project-bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #16213e; border-bottom: 1px solid #333; height: 40px; }
-        .project-left { display: flex; align-items: center; gap: 8px; flex: 1; }
-        .project-right { display: flex; align-items: center; gap: 8px; }
+        .project-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: #16213e; border-bottom: 1px solid #333; height: 40px; }
         .project-bar label { font-size: 11px; color: #888; white-space: nowrap; }
-        .project-bar input { flex: 1; max-width: 400px; background: #0f0f1a; border: 1px solid #333; color: #fff; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+        .project-bar input { width: 500px; background: #0f0f1a; border: 1px solid #333; color: #fff; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px; }
         .project-bar input:focus { border-color: #4fc3f7; outline: none; }
-        .project-bar .project-status { font-size: 10px; padding: 3px 8px; border-radius: 3px; }
-        .project-bar .project-status.valid { background: #2e7d32; color: #fff; }
-        .project-bar .project-status.invalid { background: #c62828; color: #fff; }
-        .project-bar .project-status.empty { background: #555; color: #aaa; }
-        .current-file { font-size: 12px; color: #4fc3f7; font-family: monospace; }
+        .project-bar .project-status { font-size: 10px; padding: 3px 8px; border-radius: 3px; display: none; }
+        .project-bar .project-status.invalid { display: inline; background: #c62828; color: #fff; }
+        .current-file { font-size: 12px; color: #4fc3f7; font-family: monospace; margin-left: 8px; }
     </style>
 </head>
 <body>
     <div class="project-bar">
-        <div class="project-left">
-            <label>Project:</label>
-            <input type="text" id="project-dir" placeholder="/path/to/project" onchange="validateProjectDir()">
-            <span class="project-status empty" id="project-status">Not Set</span>
-        </div>
-        <div class="project-right">
-            <span id="current-file" class="current-file">(unsaved)</span>
-        </div>
+        <label>Project:</label>
+        <input type="text" id="project-dir" placeholder="/path/to/project" onchange="validateProjectDir()">
+        <span class="project-status" id="project-status"></span>
+        <span id="current-file" class="current-file">(unsaved)</span>
     </div>
     <div class="container">
         <div class="sidebar" id="sidebar"></div>
@@ -513,8 +505,8 @@ async function validateProjectDir() {
 
     if (!path) {
         projectDir = '';
-        statusEl.className = 'project-status empty';
-        statusEl.textContent = 'Not Set';
+        statusEl.className = 'project-status';
+        statusEl.textContent = '';
         return;
     }
 
@@ -525,8 +517,8 @@ async function validateProjectDir() {
         if (data.valid) {
             projectDir = data.path;
             input.value = data.path;  // Use normalized path
-            statusEl.className = 'project-status valid';
-            statusEl.textContent = 'Valid';
+            statusEl.className = 'project-status';
+            statusEl.textContent = '';
         } else {
             projectDir = '';
             statusEl.className = 'project-status invalid';
@@ -1158,9 +1150,9 @@ function clearWorkflow() {
     // Clear project directory
     projectDir = '';
     document.getElementById('project-dir').value = '';
-    document.getElementById('project-status').className = 'project-status empty';
-    document.getElementById('project-status').textContent = 'Not Set';
-    desel(); status('Cleared');
+    document.getElementById('project-status').className = 'project-status';
+    document.getElementById('project-status').textContent = '';
+    desel(); status('New workflow');
 }
 
 init();
