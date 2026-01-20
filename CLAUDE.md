@@ -55,8 +55,16 @@ def my_op(image: np.ndarray, alpha: np.ndarray, **params) -> np.ndarray:
 
 ## Running
 ```bash
-# Node editor
+# Node editor (web UI)
 python -m vdg.nodes.web_editor
+python -m vdg.nodes.web_editor -d /path/to/project  # with project directory
+python -m vdg.nodes.web_editor -p 8080              # custom port
+
+# CLI runner (headless, for batch/automation)
+python -m vdg.nodes.runner workflow.json
+python -m vdg.nodes.runner workflow.json -d /path/to/project
+python -m vdg.nodes.runner workflow.json --set n1.filepath=input.mov
+python -m vdg.nodes.runner workflow.json -l  # list nodes and params
 
 # Tests
 pytest tests/
