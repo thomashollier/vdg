@@ -596,6 +596,22 @@ function init() {
     // Apply initial transform
     updTrans();
     updateFileDisplay();
+
+    // Load initial project directory from server
+    loadInitialProjectDir();
+}
+
+async function loadInitialProjectDir() {
+    try {
+        const r = await fetch('/api/project-dir');
+        const data = await r.json();
+        if (data.directory) {
+            document.getElementById('project-dir').value = data.directory;
+            await validateProjectDir();
+        }
+    } catch (err) {
+        console.error('Failed to load project directory:', err);
+    }
 }
 
 function updTrans() {
@@ -1254,6 +1270,12 @@ async def list_files(type: str = "all", refresh: bool = False):
 
     files = _file_cache.get(type, _file_cache.get('all', []))
     return {"files": files, "directory": _cache_directory}
+
+
+@app.get("/api/project-dir")
+async def get_project_dir():
+    """Get the current project directory."""
+    return {"directory": _cache_directory}
 
 
 @app.post("/api/abort")
