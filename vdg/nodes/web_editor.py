@@ -395,8 +395,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .toolbar button.small { padding: 8px 10px; min-width: 28px; }
         .zoom-controls { display: flex; align-items: center; gap: 4px; margin-left: 8px; padding-left: 8px; border-left: 1px solid #444; }
         #zoom-level { font-size: 11px; min-width: 40px; text-align: center; color: #aaa; }
-        .current-file { font-size: 11px; color: #888; margin-left: 12px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .current-file.modified::after { content: ' •'; color: #f0ad4e; }
         .node { position: absolute; min-width: 140px; background: #252545; border: 2px solid #444; border-radius: 6px; cursor: move; user-select: none; font-size: 11px; z-index: 3; }
         .node.selected { border-color: #4fc3f7; box-shadow: 0 0 15px rgba(79,195,247,0.3); }
         .node-hdr { padding: 6px 10px; border-radius: 4px 4px 0 0; font-weight: 600; font-size: 11px; }
@@ -438,21 +436,29 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .modal-btns button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
         .modal-btns .apply { background: #4CAF50; color: #fff; }
         .modal-btns .cancel { background: #555; color: #fff; }
-        .project-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #16213e; border-bottom: 1px solid #333; height: 40px; }
+        .project-bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #16213e; border-bottom: 1px solid #333; height: 40px; }
+        .project-left { display: flex; align-items: center; gap: 8px; flex: 1; }
+        .project-right { display: flex; align-items: center; gap: 8px; }
         .project-bar label { font-size: 11px; color: #888; white-space: nowrap; }
-        .project-bar input { flex: 1; background: #0f0f1a; border: 1px solid #333; color: #fff; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+        .project-bar input { flex: 1; max-width: 400px; background: #0f0f1a; border: 1px solid #333; color: #fff; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px; }
         .project-bar input:focus { border-color: #4fc3f7; outline: none; }
         .project-bar .project-status { font-size: 10px; padding: 3px 8px; border-radius: 3px; }
         .project-bar .project-status.valid { background: #2e7d32; color: #fff; }
         .project-bar .project-status.invalid { background: #c62828; color: #fff; }
         .project-bar .project-status.empty { background: #555; color: #aaa; }
+        .current-file { font-size: 12px; color: #4fc3f7; font-family: monospace; }
     </style>
 </head>
 <body>
     <div class="project-bar">
-        <label>Project Directory:</label>
-        <input type="text" id="project-dir" placeholder="/path/to/project" onchange="validateProjectDir()">
-        <span class="project-status empty" id="project-status">Not Set</span>
+        <div class="project-left">
+            <label>Project:</label>
+            <input type="text" id="project-dir" placeholder="/path/to/project" onchange="validateProjectDir()">
+            <span class="project-status empty" id="project-status">Not Set</span>
+        </div>
+        <div class="project-right">
+            <span id="current-file" class="current-file">(unsaved)</span>
+        </div>
     </div>
     <div class="container">
         <div class="sidebar" id="sidebar"></div>
@@ -466,7 +472,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 <button class="sec" onclick="saveAs()">Save As</button>
                 <button class="sec" onclick="load()">Load</button>
                 <button class="sec" onclick="clearWorkflow()">New</button>
-                <span id="current-file" class="current-file"></span>
                 <span class="zoom-controls">
                     <button class="sec small" onclick="zoomOut()">−</button>
                     <span id="zoom-level">100%</span>
