@@ -11,10 +11,10 @@ from typing import Iterator
 
 
 # Pattern for parsing CRV format: FRAME [[ x, y ]]
-CRV_PATTERN = re.compile(r'(\d+)\s*\[\[\s*([\d.]+)\s*,\s*([\d.]+)\s*\]\]')
+CRV_PATTERN = re.compile(r'(\d+)\s*\[\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]\]')
 
 # Pattern for parsing simple format: FRAME x y
-SIMPLE_PATTERN = re.compile(r'(\d+)\s+([\d.]+)\s+([\d.]+)')
+SIMPLE_PATTERN = re.compile(r'(\d+)\s+(-?[\d.]+)\s+(-?[\d.]+)')
 
 
 def parse_track_line(line: str) -> tuple[int, float, float] | None:

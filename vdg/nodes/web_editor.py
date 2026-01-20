@@ -27,6 +27,62 @@ except ImportError:
 # Global abort flag for cancelling running jobs
 _abort_flag = False
 
+# File cache for autocomplete suggestions
+_file_cache = {
+    'video': [],
+    'image': [],
+    'track': [],
+    'all': [],
+}
+_cache_directory = None
+
+# File extension categories
+_FILE_EXTENSIONS = {
+    'video': {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.mxf', '.m4v'},
+    'image': {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.exr', '.dpx', '.hdr'},
+    'track': {'.crv', '.json'},
+}
+
+
+def refresh_file_cache(directory: str = None) -> dict:
+    """Scan directory and update the file cache."""
+    global _file_cache, _cache_directory
+    from pathlib import Path
+    import os
+
+    if directory:
+        _cache_directory = directory
+
+    if not _cache_directory:
+        _cache_directory = os.getcwd()
+
+    target = Path(_cache_directory).expanduser().resolve()
+    if not target.exists() or not target.is_dir():
+        return _file_cache
+
+    # Reset cache
+    _file_cache = {k: [] for k in _file_cache}
+
+    try:
+        for item in target.iterdir():
+            if item.is_file():
+                ext = item.suffix.lower()
+                name = item.name
+                _file_cache['all'].append(name)
+
+                for category, extensions in _FILE_EXTENSIONS.items():
+                    if ext in extensions:
+                        _file_cache[category].append(name)
+                        break
+
+        # Sort all lists
+        for k in _file_cache:
+            _file_cache[k].sort(key=str.lower)
+    except PermissionError:
+        pass
+
+    return _file_cache
+
 
 def _ensure_video_extension(path: str) -> str:
     """Ensure preview path has a video extension, not an image extension.
@@ -358,6 +414,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .prop label { display: block; font-size: 10px; color: #888; margin-bottom: 3px; text-transform: uppercase; }
         .prop input, .prop select { width: 100%; padding: 6px; background: #252545; border: 1px solid #333; border-radius: 3px; color: #fff; font-size: 12px; }
         .prop input:focus { border-color: #4fc3f7; outline: none; }
+        .file-input-wrap { display: flex; gap: 4px; }
+        .file-input-wrap input { flex: 1; border-radius: 3px 0 0 3px; }
+        .file-browse-btn { padding: 6px 8px; background: #444; border: 1px solid #333; border-left: none; border-radius: 0 3px 3px 0; color: #aaa; cursor: pointer; font-size: 10px; }
+        .file-browse-btn:hover { background: #555; color: #fff; }
         .del-btn { margin-top: 16px; width: 100%; padding: 8px; background: #c0392b; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; }
         .status { position: absolute; bottom: 10px; left: 220px; background: rgba(22,33,62,0.9); padding: 6px 12px; border-radius: 4px; font-size: 11px; color: #888; }
         .conn { stroke: #4fc3f7; stroke-width: 2; fill: none; }
@@ -613,6 +673,12 @@ function showProps(n) {
                 h += '<input type="checkbox" data-p="' + p.name + '"' + (n.params[p.name] ? ' checked' : '') + '>';
             } else if (p.type === 'int' || p.type === 'float') {
                 h += '<input type="number" data-p="' + p.name + '" value="' + (n.params[p.name] ?? '') + '" step="' + (p.type === 'float' ? '0.1' : '1') + '"' + (p.min != null ? ' min="' + p.min + '"' : '') + (p.max != null ? ' max="' + p.max + '"' : '') + '>';
+            } else if (p.type === 'file') {
+                // File input with suggestions dropdown
+                const fileType = n.type.includes('video') ? 'video' : n.type.includes('image') ? 'image' : n.type.includes('track') ? 'track' : 'all';
+                h += '<div class="file-input-wrap"><input type="text" data-p="' + p.name + '" data-filetype="' + fileType + '" value="' + (n.params[p.name] || '') + '" list="filelist-' + p.name + '" autocomplete="off">';
+                h += '<button type="button" class="file-browse-btn" data-p="' + p.name + '" data-filetype="' + fileType + '">▼</button></div>';
+                h += '<datalist id="filelist-' + p.name + '"></datalist>';
             } else {
                 h += '<input type="text" data-p="' + p.name + '" value="' + (n.params[p.name] || '') + '">';
             }
@@ -627,6 +693,26 @@ function showProps(n) {
             n.params[e.target.dataset.p] = v;
         };
     });
+    // Set up file input suggestions
+    document.querySelectorAll('#props .file-browse-btn').forEach(btn => {
+        btn.onclick = () => loadFileSuggestions(btn.dataset.p, btn.dataset.filetype);
+    });
+    document.querySelectorAll('#props input[data-filetype]').forEach(inp => {
+        inp.onfocus = () => loadFileSuggestions(inp.dataset.p, inp.dataset.filetype);
+    });
+}
+
+async function loadFileSuggestions(paramName, fileType) {
+    try {
+        const r = await fetch('/api/files?type=' + fileType);
+        const data = await r.json();
+        const dl = document.getElementById('filelist-' + paramName);
+        if (dl) {
+            dl.innerHTML = data.files.map(f => '<option value="' + f + '">').join('');
+        }
+    } catch (err) {
+        console.error('Failed to load file suggestions:', err);
+    }
 }
 
 function delNode() {
@@ -1062,7 +1148,25 @@ async def validate_path(path: str):
     except PermissionError:
         return {"valid": False, "error": "Permission denied"}
 
+    # Refresh file cache for this directory
+    refresh_file_cache(str(target))
+
     return {"valid": True, "path": str(target)}
+
+
+@app.get("/api/files")
+async def list_files(type: str = "all", refresh: bool = False):
+    """List files in the project directory, filtered by type.
+
+    Args:
+        type: Filter by file type ('video', 'image', 'track', 'all')
+        refresh: Force refresh the cache
+    """
+    if refresh or not _file_cache.get('all'):
+        refresh_file_cache()
+
+    files = _file_cache.get(type, _file_cache.get('all', []))
+    return {"files": files, "directory": _cache_directory}
 
 
 @app.post("/api/abort")
@@ -1949,6 +2053,8 @@ class GraphExecutor:
         """Close video writer."""
         if state.get('writer'):
             state['writer'].release()
+            # Refresh file cache
+            refresh_file_cache()
 
     def _stream_clahe(self, frame, data, state, params):
         """Apply CLAHE to one frame."""
@@ -2588,7 +2694,7 @@ def handle_stabilizer(inputs: dict, params: dict, executor) -> dict:
     """Compute stabilization transforms from track data."""
     track1 = inputs.get('track1', {})
     track2 = inputs.get('track2', {})
-    props = inputs.get('props')
+    props_input = inputs.get('props')
 
     if not track1:
         raise ValueError("No track data for track1")
@@ -2598,6 +2704,18 @@ def handle_stabilizer(inputs: dict, params: dict, executor) -> dict:
     swap_xy = params.get('swap_xy', False)
     x_flip = params.get('x_flip', False)
     y_flip = params.get('y_flip', False)
+
+    # props can be either a VideoProperties object or a video_out dict
+    # If it's a dict (video_out), extract props and frame range from it
+    video_first_frame = None
+    video_last_frame = None
+    props = props_input
+
+    if isinstance(props_input, dict):
+        # It's a video_out dict - extract frame range and props
+        video_first_frame = props_input.get('first_frame')
+        video_last_frame = props_input.get('last_frame')
+        props = props_input.get('props')
 
     # Get video dimensions for denormalization
     if props and hasattr(props, 'width'):
@@ -2658,8 +2776,26 @@ def handle_stabilizer(inputs: dict, params: dict, executor) -> dict:
     if not frames:
         raise ValueError("No valid frames in track data")
 
+    # Filter frames to video's frame range if specified
+    original_frame_count = len(frames)
+    if video_first_frame is not None:
+        frames = [f for f in frames if f >= video_first_frame]
+    if video_last_frame is not None:
+        frames = [f for f in frames if f <= video_last_frame]
+
+    if not frames:
+        raise ValueError(f"No track frames within video range ({video_first_frame}-{video_last_frame})")
+
+    if len(frames) != original_frame_count:
+        executor._log(f"  Filtered tracks to video range: {frames[0]}-{frames[-1]} ({len(frames)} of {original_frame_count} frames)")
+
     if ref_frame == -1:
         ref_frame = frames[0]
+    elif ref_frame not in frames:
+        # Clamp ref_frame to valid range if it's outside the filtered frames
+        old_ref = ref_frame
+        ref_frame = min(frames, key=lambda f: abs(f - ref_frame))
+        executor._log(f"  Warning: ref_frame {old_ref} not in range, using {ref_frame}")
 
     executor._log(f"  Mode: {mode}, ref_frame: {ref_frame}, {len(frames)} frames")
 
@@ -3040,6 +3176,9 @@ def handle_image_output(inputs: dict, params: dict, executor) -> dict:
 
     executor._log(f"  Saved {filepath} ({bit_depth}-bit, {image.shape[1]}x{image.shape[0]})")
 
+    # Refresh file cache
+    refresh_file_cache()
+
     return {'filepath': filepath}
 
 
@@ -3084,6 +3223,9 @@ def handle_video_output(inputs: dict, params: dict, executor) -> dict:
 
     writer.release()
     executor._log(f"  Saved {filepath} ({len(actual_frames)} frames, {w}x{h})")
+
+    # Refresh file cache
+    refresh_file_cache()
 
     return {'filepath': filepath}
 
@@ -3146,6 +3288,9 @@ def handle_track_output(inputs: dict, params: dict, executor) -> dict:
             f.write(f"{frame_num} [[ {x_norm}, {y_norm}]]\n")
 
     executor._log(f"  Saved {filepath} ({len(track_data)} frames)")
+
+    # Refresh file cache
+    refresh_file_cache()
 
     return {'filepath': filepath}
 
@@ -3435,11 +3580,31 @@ NODE_HANDLERS = {
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="VDG Node Editor - Web-based node editor for video processing")
+    parser.add_argument('-d', '--directory', type=str, help='Project directory for file suggestions')
+    parser.add_argument('-p', '--port', type=int, default=8000, help='Port to run server on (default: 8000)')
+    parser.add_argument('--host', type=str, default='127.0.0.1', help='Host to bind to (default: 127.0.0.1)')
+    args = parser.parse_args()
+
+    # Set initial project directory if provided
+    if args.directory:
+        from pathlib import Path
+        dir_path = Path(args.directory).expanduser().resolve()
+        if dir_path.is_dir():
+            refresh_file_cache(str(dir_path))
+            print(f"Project directory: {dir_path}")
+        else:
+            print(f"Warning: Directory not found: {args.directory}")
+            refresh_file_cache()
+    else:
+        refresh_file_cache()
+
     print("=" * 50)
     print("VDG Node Editor")
-    print("Open http://localhost:8000")
+    print(f"Open http://{args.host}:{args.port}")
     print("=" * 50)
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":
