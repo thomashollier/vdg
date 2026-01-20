@@ -395,6 +395,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .toolbar button.small { padding: 8px 10px; min-width: 28px; }
         .zoom-controls { display: flex; align-items: center; gap: 4px; margin-left: 8px; padding-left: 8px; border-left: 1px solid #444; }
         #zoom-level { font-size: 11px; min-width: 40px; text-align: center; color: #aaa; }
+        .current-file { font-size: 11px; color: #888; margin-left: 12px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .current-file.modified::after { content: ' •'; color: #f0ad4e; }
         .node { position: absolute; min-width: 140px; background: #252545; border: 2px solid #444; border-radius: 6px; cursor: move; user-select: none; font-size: 11px; z-index: 3; }
         .node.selected { border-color: #4fc3f7; box-shadow: 0 0 15px rgba(79,195,247,0.3); }
         .node-hdr { padding: 6px 10px; border-radius: 4px 4px 0 0; font-weight: 600; font-size: 11px; }
@@ -461,8 +463,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 <button id="run-btn" onclick="execute()">▶ Run</button>
                 <button id="abort-btn" class="abort" onclick="abort()" style="display:none;">⏹ Abort</button>
                 <button class="sec" onclick="save()">Save</button>
+                <button class="sec" onclick="saveAs()">Save As</button>
                 <button class="sec" onclick="load()">Load</button>
-                <button class="sec" onclick="clear()">Clear</button>
+                <button class="sec" onclick="clearWorkflow()">New</button>
+                <span id="current-file" class="current-file"></span>
                 <span class="zoom-controls">
                     <button class="sec small" onclick="zoomOut()">−</button>
                     <span id="zoom-level">100%</span>
@@ -494,6 +498,8 @@ let zoom = 1;
 const ZOOM_MIN = 0.25, ZOOM_MAX = 2, ZOOM_STEP = 0.1;
 const CANVAS_OFFSET = 5000;  // Canvas/SVG positioned at -5000,-5000
 let projectDir = '';
+let currentFileHandle = null;  // File System Access API handle
+let currentFileName = null;    // Current workflow filename
 
 async function validateProjectDir() {
     const input = document.getElementById('project-dir');
@@ -592,6 +598,7 @@ function init() {
 
     // Apply initial transform
     updTrans();
+    updateFileDisplay();
 }
 
 function updTrans() {
@@ -998,7 +1005,33 @@ async function abort() {
     }
 }
 
+function updateFileDisplay() {
+    const el = document.getElementById('current-file');
+    el.textContent = currentFileName || '(unsaved)';
+    el.title = currentFileName || 'No file loaded';
+}
+
 async function save() {
+    // If we have a file handle, save directly to it
+    if (currentFileHandle) {
+        const data = {projectDir, nodes, conns};
+        const content = JSON.stringify(data, null, 2);
+        try {
+            const writable = await currentFileHandle.createWritable();
+            await writable.write(content);
+            await writable.close();
+            status('Saved: ' + currentFileName);
+            return;
+        } catch (err) {
+            console.error('Save failed:', err);
+            // Fall through to saveAs
+        }
+    }
+    // No file handle - use Save As
+    await saveAs();
+}
+
+async function saveAs() {
     const data = {projectDir, nodes, conns};
     const content = JSON.stringify(data, null, 2);
 
@@ -1006,15 +1039,18 @@ async function save() {
     if (window.showSaveFilePicker) {
         try {
             const handle = await window.showSaveFilePicker({
-                suggestedName: 'vdg-graph.json',
+                suggestedName: currentFileName || 'vdg-workflow.json',
                 types: [{
-                    description: 'VDG Graph',
+                    description: 'VDG Workflow',
                     accept: {'application/json': ['.json']}
                 }]
             });
             const writable = await handle.createWritable();
             await writable.write(content);
             await writable.close();
+            currentFileHandle = handle;
+            currentFileName = handle.name;
+            updateFileDisplay();
             status('Saved: ' + handle.name);
             return;
         } catch (err) {
@@ -1026,40 +1062,94 @@ async function save() {
         }
     }
 
-    // Fallback: download method
+    // Fallback: download method (no handle available)
     const b = new Blob([content], {type: 'application/json'});
-    const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'vdg-graph.json'; a.click();
-    status('Saved');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = currentFileName || 'vdg-workflow.json';
+    a.click();
+    status('Downloaded');
 }
 
-function load() {
-    const i = document.createElement('input'); i.type = 'file'; i.accept = '.json';
-    i.onchange = e => {
-        const r = new FileReader();
-        r.onload = async ev => {
-            const d = JSON.parse(ev.target.result);
-            clear();
+async function load() {
+    // Try File System Access API first
+    if (window.showOpenFilePicker) {
+        try {
+            const [handle] = await window.showOpenFilePicker({
+                types: [{
+                    description: 'VDG Workflow',
+                    accept: {'application/json': ['.json']}
+                }]
+            });
+            const file = await handle.getFile();
+            const content = await file.text();
+            const d = JSON.parse(content);
+
+            clearCanvas();
             nodes = d.nodes || []; conns = d.conns || [];
             nid = Math.max(0, ...nodes.map(n => parseInt(n.id.slice(1)) || 0));
             nodes.forEach(render); drawConns();
+
+            currentFileHandle = handle;
+            currentFileName = handle.name;
+            updateFileDisplay();
 
             // Restore project directory
             if (d.projectDir) {
                 document.getElementById('project-dir').value = d.projectDir;
                 await validateProjectDir();
             }
-            status('Loaded');
+            status('Loaded: ' + handle.name);
+            return;
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                status('Load cancelled');
+                return;
+            }
+            // Fall through to file input method
+        }
+    }
+
+    // Fallback: file input (no handle available)
+    const i = document.createElement('input'); i.type = 'file'; i.accept = '.json';
+    i.onchange = e => {
+        const file = e.target.files[0];
+        const r = new FileReader();
+        r.onload = async ev => {
+            const d = JSON.parse(ev.target.result);
+            clearCanvas();
+            nodes = d.nodes || []; conns = d.conns || [];
+            nid = Math.max(0, ...nodes.map(n => parseInt(n.id.slice(1)) || 0));
+            nodes.forEach(render); drawConns();
+
+            currentFileHandle = null;  // No handle with fallback method
+            currentFileName = file.name;
+            updateFileDisplay();
+
+            // Restore project directory
+            if (d.projectDir) {
+                document.getElementById('project-dir').value = d.projectDir;
+                await validateProjectDir();
+            }
+            status('Loaded: ' + file.name);
         };
-        r.readAsText(e.target.files[0]);
+        r.readAsText(file);
     };
     i.click();
 }
 
-function clear() {
+function clearCanvas() {
     document.getElementById('canvas').innerHTML = '';
     document.getElementById('svg-layer').innerHTML = '';
     nodes = []; conns = []; nid = 0; pan = {x: 0, y: 0}; zoom = 1;
     updTrans();
+}
+
+function clearWorkflow() {
+    clearCanvas();
+    currentFileHandle = null;
+    currentFileName = null;
+    updateFileDisplay();
     // Clear project directory
     projectDir = '';
     document.getElementById('project-dir').value = '';
