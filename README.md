@@ -27,9 +27,35 @@ The easiest way to use VDG is through the web-based node editor:
 # Start the node editor
 python -m vdg.nodes.web_editor
 
+# With project directory (for file suggestions)
+python -m vdg.nodes.web_editor -d /path/to/project
+
+# Custom port
+python -m vdg.nodes.web_editor -p 8080
+
 # Open in browser
 # http://localhost:8000
 ```
+
+### CLI Runner (Headless)
+
+Run workflows from the command line without the UI:
+
+```bash
+# Run a workflow
+python -m vdg.nodes.runner workflow.json
+
+# With project directory
+python -m vdg.nodes.runner workflow.json -d /path/to/project
+
+# Override node parameters
+python -m vdg.nodes.runner workflow.json --set n1.filepath=input.mov --set n4.filepath=output.png
+
+# List nodes and parameters (dry run)
+python -m vdg.nodes.runner workflow.json -l
+```
+
+The runner returns exit code 0 on success, 1 on failure, making it suitable for shell scripts and automation.
 
 ### Example Workflows
 
@@ -41,6 +67,15 @@ Load pre-built workflows from the `workflows/` directory:
 - `post_process.json` - Post-processing from existing images
 
 ## Node Editor
+
+### UI Features
+
+- **Project Directory**: Set working directory for relative file paths and file suggestions
+- **Save/Save As**: Save workflows to JSON files; Save remembers the current file
+- **Load**: Open existing workflow files
+- **Run/Abort**: Execute workflows with ability to abort long-running jobs
+- **Zoom**: Mouse wheel or +/- buttons to zoom the canvas
+- **Pan**: Click and drag on empty canvas to pan
 
 ### Available Nodes
 
@@ -65,8 +100,14 @@ Load pre-built workflows from the `workflows/` directory:
 | **Apply Transform** | Apply stabilization | `video_in`, `transforms` | `video_out`, `mask_out` |
 | **Frame Average** | Accumulate frames | `video_in`, `mask_in` | `image_out`, `alpha_out` |
 | **Gamma** | Linear/sRGB conversion | `video_in`/`image_in`, `mask_in` | `video_out`/`image_out`, `mask_out` |
+| **RGB Multiply** | Per-channel color correction | `video_in`/`image_in` | `video_out`/`image_out` |
 | **CLAHE** | Adaptive contrast | `image_in` | `image_out` |
 | **Post Process** | Alpha compositing operations | `image_in`, `alpha_in` | `image_out` |
+
+#### Utility Nodes
+| Node | Description | Inputs | Outputs |
+|------|-------------|--------|---------|
+| **Gaussian Filter** | Smooth track data | `track_data` | `track_data` |
 
 #### Output Nodes
 | Node | Description | Inputs |
@@ -216,7 +257,8 @@ vdg/
 │   │   └── operations.py         # Operation registry and implementations
 │   │
 │   ├── nodes/                    # Web node editor
-│   │   └── web_editor.py         # FastAPI server + graph executor
+│   │   ├── web_editor.py         # FastAPI server + graph executor
+│   │   └── runner.py             # CLI runner for headless execution
 │   │
 │   └── outputs/                  # Output handlers
 │       ├── base.py               # BaseOutput abstract class
