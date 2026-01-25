@@ -2091,8 +2091,18 @@ class GraphExecutor:
         if state['accumulator'] is None:
             state['accumulator'] = np.zeros(frame.shape, dtype=np.float64)
             state['alpha_accumulator'] = np.zeros(frame.shape[:2], dtype=np.float64)
+            # Track input range for proper normalization
+            state['input_is_float'] = frame.dtype in (np.float32, np.float64)
 
-        state['accumulator'] += frame.astype(np.float64)
+        # Normalize frame to 0-1 range before accumulating
+        if frame.dtype == np.float32 or frame.dtype == np.float64:
+            frame_norm = frame.astype(np.float64)
+        elif frame.dtype == np.uint16:
+            frame_norm = frame.astype(np.float64) / 65535.0
+        else:
+            frame_norm = frame.astype(np.float64) / 255.0
+
+        state['accumulator'] += frame_norm
 
         # Use mask if provided (from data['mask'] or inputs['_mask']), otherwise compute from luminance
         mask = data.get('mask') if data.get('mask') is not None else inputs.get('_mask')
@@ -2100,10 +2110,13 @@ class GraphExecutor:
             # Handle multi-channel mask (take first channel)
             if mask.ndim == 3:
                 mask = mask[:, :, 0]
-            state['alpha_accumulator'] += mask.astype(np.float64) / 255.0
+            if mask.dtype == np.float32 or mask.dtype == np.float64:
+                state['alpha_accumulator'] += mask.astype(np.float64)
+            else:
+                state['alpha_accumulator'] += mask.astype(np.float64) / 255.0
         else:
-            frame_f = frame.astype(np.float32) / 255.0
-            alpha = np.power(np.clip(frame_f.mean(axis=2) * 255 / 16.0, 0, 1), 4)
+            # Compute alpha from luminance (frame_norm is already 0-1)
+            alpha = np.power(np.clip(frame_norm.mean(axis=2) / (16.0/255.0), 0, 1), 4)
             state['alpha_accumulator'] += alpha
 
         state['frame_count'] += 1
@@ -2116,6 +2129,7 @@ class GraphExecutor:
         if state['frame_count'] == 0:
             raise ValueError("No frames accumulated")
 
+        # Accumulator is already in 0-1 range
         result = state['accumulator'] / state['frame_count']
         alpha = state['alpha_accumulator'] / state['frame_count']
 
@@ -2126,21 +2140,23 @@ class GraphExecutor:
 
         if comp_mode == 'on_white':
             alpha_3ch = np.dstack([alpha, alpha, alpha])
-            white = np.ones_like(result) * 255
+            white = np.ones_like(result)  # Already 0-1 range
             result = result * alpha_3ch + white * (1 - alpha_3ch)
         elif comp_mode == 'unpremult':
             alpha_3ch = np.dstack([alpha, alpha, alpha])
             alpha_3ch = np.clip(alpha_3ch, 0.001, 1.0)
             result = result / alpha_3ch
 
-        result = np.clip(result, 0, 255).astype(np.uint8)
-        alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
+        # Output as float32 in 0-1 range to preserve precision
+        result = np.clip(result, 0, 1).astype(np.float32)
+        alpha = np.clip(alpha, 0, 1).astype(np.float32)
 
         return result, alpha
 
     def _stream_video_output(self, frame, data, state, params, is_first):
         """Write one frame to video output."""
         import cv2
+        import numpy as np
         from pathlib import Path
 
         if is_first:
@@ -2154,7 +2170,14 @@ class GraphExecutor:
             state['filepath'] = filepath
 
         if state.get('writer'):
-            state['writer'].write(frame)
+            # VideoWriter expects uint8, convert if necessary
+            if frame.dtype == np.float32 or frame.dtype == np.float64:
+                frame_out = np.clip(frame * 255, 0, 255).astype(np.uint8)
+            elif frame.dtype == np.uint16:
+                frame_out = (frame >> 8).astype(np.uint8)
+            else:
+                frame_out = frame
+            state['writer'].write(frame_out)
 
         state['frame_count'] += 1
 
@@ -2168,14 +2191,27 @@ class GraphExecutor:
     def _stream_clahe(self, frame, data, state, params):
         """Apply CLAHE to one frame."""
         import cv2
+        import numpy as np
 
         clip = params.get('clip_limit', 40.0)
         grid = params.get('grid_size', 8)
         clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid))
 
-        channels = cv2.split(frame)
+        # CLAHE requires uint8, convert if necessary
+        was_float = frame.dtype == np.float32 or frame.dtype == np.float64
+        if was_float:
+            frame_u8 = np.clip(frame * 255, 0, 255).astype(np.uint8)
+        elif frame.dtype == np.uint16:
+            frame_u8 = (frame >> 8).astype(np.uint8)
+        else:
+            frame_u8 = frame
+
+        channels = cv2.split(frame_u8)
         enhanced = [clahe.apply(ch) for ch in channels]
         result = cv2.merge(enhanced)
+
+        # Convert back to float32 to maintain precision in pipeline
+        result = result.astype(np.float32) / 255.0
 
         state['frame_count'] += 1
         return result, data
@@ -2195,18 +2231,18 @@ class GraphExecutor:
             # linear to sRGB: raise to power of 1/gamma
             exponent = 1.0 / gamma
 
-        # Apply gamma to video frame only (not mask)
-        # Normalize to 0-1, apply gamma, scale back
+        # Normalize to 0-1 float32, apply gamma, keep as float32
         if frame.dtype == np.uint8:
-            max_val = 255.0
+            frame_float = frame.astype(np.float32) / 255.0
         elif frame.dtype == np.uint16:
-            max_val = 65535.0
+            frame_float = frame.astype(np.float32) / 65535.0
+        elif frame.dtype == np.float32 or frame.dtype == np.float64:
+            frame_float = frame.astype(np.float32)
         else:
-            max_val = 1.0
+            frame_float = frame.astype(np.float32) / 255.0
 
-        frame_float = frame.astype(np.float32) / max_val
         frame_corrected = np.power(frame_float, exponent)
-        frame_corrected = np.clip(frame_corrected * max_val, 0, max_val).astype(frame.dtype)
+        frame_corrected = np.clip(frame_corrected, 0, 1).astype(np.float32)
 
         # Pass through mask unchanged (it's already linear)
         mask = data.get('mask')
@@ -2242,7 +2278,8 @@ class GraphExecutor:
         frame_float[:, :, 1] *= green
         frame_float[:, :, 2] *= red
 
-        frame_corrected = np.clip(frame_float * max_val, 0, max_val).astype(frame.dtype)
+        # Output as float32 in 0-1 range to preserve precision
+        frame_corrected = np.clip(frame_float, 0, 1).astype(np.float32)
 
         state['frame_count'] += 1
         return frame_corrected, data
