@@ -1,0 +1,169 @@
+{
+  "projectDir": "/Users/thomas/Documents/Slitscans/20251218_veniceBeachFoggy",
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "video_input",
+      "x": 100,
+      "y": 200,
+      "params": {
+        "filepath": "12182025165329799.mov",
+        "first_frame": 1,
+        "last_frame": -1,
+        "use_hardware": false,
+        "hlg_convert": false
+      }
+    },
+    {
+      "id": "n2",
+      "type": "blender_track",
+      "x": 350,
+      "y": 150,
+      "params": {
+        "edit_blender": "Edit in Blender",
+        "mode": "two_point",
+        "session_dir": ""
+      }
+    },
+    {
+      "id": "n3",
+      "type": "stabilizer",
+      "x": 600,
+      "y": 200,
+      "params": {
+        "mode": "two_point",
+        "ref_frame": -1,
+        "swap_xy": false,
+        "x_flip": false,
+        "y_flip": false
+      }
+    },
+    {
+      "id": "n4",
+      "type": "gamma",
+      "x": 350,
+      "y": 350,
+      "params": {
+        "mode": "to_linear",
+        "gamma": 2.2
+      }
+    },
+    {
+      "id": "n5",
+      "type": "apply_transform",
+      "x": 850,
+      "y": 300,
+      "params": {
+        "x_pad": 500,
+        "y_pad": 500,
+        "x_offset": 0,
+        "y_offset": 0
+      }
+    },
+    {
+      "id": "n6",
+      "type": "frame_average",
+      "x": 1100,
+      "y": 350,
+      "params": {
+        "comp_mode": "on_black",
+        "brightness": 1
+      }
+    },
+    {
+      "id": "n7",
+      "type": "gamma",
+      "x": 1350,
+      "y": 350,
+      "params": {
+        "mode": "to_srgb",
+        "gamma": 2.2
+      }
+    },
+    {
+      "id": "n8",
+      "type": "image_output",
+      "x": 1600,
+      "y": 350,
+      "params": {
+        "filepath": "output.png",
+        "auto_name": true,
+        "bit_depth": "16"
+      }
+    }
+  ],
+  "conns": [
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n2",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n2",
+      "sp": "track_data",
+      "tn": "n3",
+      "tp": "track1"
+    },
+    {
+      "sn": "n2",
+      "sp": "track_data_2",
+      "tn": "n3",
+      "tp": "track2"
+    },
+    {
+      "sn": "n1",
+      "sp": "props",
+      "tn": "n3",
+      "tp": "props"
+    },
+    {
+      "sn": "n1",
+      "sp": "video",
+      "tn": "n4",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n4",
+      "sp": "video_out",
+      "tn": "n5",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n3",
+      "sp": "transforms",
+      "tn": "n5",
+      "tp": "transforms"
+    },
+    {
+      "sn": "n5",
+      "sp": "video_out",
+      "tn": "n6",
+      "tp": "video_in"
+    },
+    {
+      "sn": "n5",
+      "sp": "mask",
+      "tn": "n6",
+      "tp": "mask_in"
+    },
+    {
+      "sn": "n6",
+      "sp": "image_out",
+      "tn": "n7",
+      "tp": "image_in"
+    },
+    {
+      "sn": "n7",
+      "sp": "image_out",
+      "tn": "n8",
+      "tp": "image_in"
+    },
+    {
+      "sn": "n1",
+      "sp": "video_out",
+      "tn": "n2",
+      "tp": "video_in"
+    }
+  ]
+}

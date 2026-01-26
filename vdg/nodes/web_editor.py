@@ -211,6 +211,20 @@ NODE_DEFINITIONS = [
         color="#2196F3",
     ),
     NodeDefinition(
+        id="blender_track", title="Blender Track", category="Tracking",
+        inputs=[NodePort("video_in", "video")],
+        outputs=[
+            NodePort("track_data", "track_data"),
+            NodePort("track_data_2", "track_data"),
+        ],
+        params=[
+            NodeParam("edit_blender", "button", "Edit in Blender"),
+            NodeParam("mode", "choice", "single", choices=["single", "two_point"]),
+            NodeParam("session_dir", "string", ""),
+        ],
+        color="#E91E63",
+    ),
+    NodeDefinition(
         id="stabilizer", title="Stabilizer", category="Tracking",
         inputs=[
             NodePort("track1", "track_data"),
@@ -448,6 +462,13 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .project-bar .project-status { font-size: 10px; padding: 3px 8px; border-radius: 3px; display: none; }
         .project-bar .project-status.invalid { display: inline; background: #c62828; color: #fff; }
         .current-file { font-size: 12px; color: #4fc3f7; font-family: monospace; margin-left: 8px; }
+        .blender-modal { text-align: center; min-width: 300px; }
+        .blender-status { padding: 30px 20px; }
+        .blender-status p { margin: 15px 0 0; color: #aaa; line-height: 1.6; }
+        .blender-status strong { color: #4fc3f7; }
+        .blender-spinner { width: 40px; height: 40px; border: 3px solid #333; border-top-color: #E91E63; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .pick-btn.blender-btn { background: #E91E63; }
     </style>
 </head>
 <body>
@@ -489,6 +510,18 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             <div class="modal-btns">
                 <button class="cancel" onclick="closeROIModal()">Cancel</button>
                 <button class="apply" onclick="applyROI()">Apply</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="blender-modal">
+        <div class="modal blender-modal">
+            <h3>Editing in Blender</h3>
+            <div class="blender-status">
+                <div class="blender-spinner"></div>
+                <p>Blender is open. Track your markers, then click<br><strong>"Export to VDG"</strong> in the VDG panel.</p>
+            </div>
+            <div class="modal-btns">
+                <button class="cancel" onclick="cancelBlenderEdit()">Cancel</button>
             </div>
         </div>
     </div>
@@ -689,7 +722,11 @@ function showProps(n) {
     let h = '<h3>' + d.title + '</h3>';
     d.params.forEach(p => {
         if (p.type === 'button') {
-            h += '<div class="prop"><button class="pick-btn" onclick="pickROI(\\'' + n.id + '\\')">' + p.default + '</button></div>';
+            if (p.name === 'edit_blender') {
+                h += '<div class="prop"><button class="pick-btn blender-btn" onclick="editInBlender(\\'' + n.id + '\\')">' + p.default + '</button></div>';
+            } else {
+                h += '<div class="prop"><button class="pick-btn" onclick="pickROI(\\'' + n.id + '\\')">' + p.default + '</button></div>';
+            }
         } else {
             h += '<div class="prop"><label>' + p.name + '</label>';
             if (p.choices) {
@@ -973,6 +1010,89 @@ document.addEventListener('DOMContentLoaded', () => {
     canvas.onmouseup = () => { roiDrawing = false; };
     canvas.onmouseleave = () => { roiDrawing = false; };
 });
+
+// Blender round-trip editing
+let blenderNode = null;
+let blenderAbortController = null;
+
+async function editInBlender(nodeId) {
+    blenderNode = nodes.find(n => n.id === nodeId);
+    if (!blenderNode) { alert('Node not found'); return; }
+
+    // Find connected video input
+    const conn = conns.find(c => c.tn === nodeId && c.tp === 'video_in');
+    if (!conn) { alert('Connect a video input to the Blender Track node first'); return; }
+
+    const srcNode = nodes.find(n => n.id === conn.sn);
+    if (!srcNode || srcNode.type !== 'video_input') { alert('Source must be a video_input node'); return; }
+
+    const filepath = resolvePath(srcNode.params.filepath);
+    if (!filepath) { alert('Video input has no filepath set'); return; }
+
+    if (!projectDir) { alert('Set a project directory first'); return; }
+
+    // Show modal
+    document.getElementById('blender-modal').classList.add('active');
+    status('Opening Blender...');
+
+    // Prepare request
+    const mode = blenderNode.params.mode || 'single';
+    const existingSession = blenderNode.params.session_dir || '';
+
+    blenderAbortController = new AbortController();
+
+    try {
+        const r = await fetch('/api/blender-edit', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                video_path: filepath,
+                first_frame: srcNode.params.first_frame || 1,
+                last_frame: srcNode.params.last_frame || -1,
+                mode: mode,
+                session_dir: existingSession,
+                project_dir: projectDir,
+            }),
+            signal: blenderAbortController.signal,
+        });
+
+        const result = await r.json();
+
+        if (result.success) {
+            // Update node with session info
+            blenderNode.params.session_dir = result.session_dir;
+
+            status('Blender tracking complete: ' + result.track_files.length + ' track(s)');
+            showProps(blenderNode);
+        } else {
+            status('Blender edit failed');
+            alert('Blender edit failed: ' + (result.error || 'Unknown error'));
+        }
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            status('Blender edit cancelled');
+        } else {
+            status('Error');
+            alert('Failed to edit in Blender: ' + err.message);
+        }
+    } finally {
+        closeBlenderModal();
+    }
+}
+
+function cancelBlenderEdit() {
+    if (blenderAbortController) {
+        blenderAbortController.abort();
+    }
+    closeBlenderModal();
+    status('Blender edit cancelled');
+}
+
+function closeBlenderModal() {
+    document.getElementById('blender-modal').classList.remove('active');
+    blenderNode = null;
+    blenderAbortController = null;
+}
 
 let isRunning = false;
 
@@ -1283,6 +1403,140 @@ async def get_project_dir():
     return {"directory": _cache_directory}
 
 
+@app.post("/api/blender-edit")
+async def blender_edit(request: dict):
+    """Launch Blender for tracking and wait for it to complete.
+
+    This creates a session directory with a JSON config, launches Blender
+    with the vdg_bridge.py script, and blocks until Blender exits.
+    """
+    import asyncio
+    import subprocess
+    import shutil
+    from pathlib import Path
+
+    video_path = request.get("video_path")
+    first_frame = request.get("first_frame", 1)
+    last_frame = request.get("last_frame", -1)
+    mode = request.get("mode", "single")
+    existing_session = request.get("session_dir", "")
+    project_dir = request.get("project_dir", "")
+
+    if not video_path:
+        return {"success": False, "error": "No video path provided"}
+
+    video_path = Path(video_path)
+    if not video_path.exists():
+        return {"success": False, "error": f"Video not found: {video_path}"}
+
+    # Find Blender executable
+    blender_path = shutil.which("blender")
+    if not blender_path:
+        # Try common locations
+        common_paths = [
+            "/Applications/Blender.app/Contents/MacOS/Blender",
+            "/usr/bin/blender",
+            "/usr/local/bin/blender",
+            "C:\\Program Files\\Blender Foundation\\Blender\\blender.exe",
+        ]
+        for p in common_paths:
+            if Path(p).exists():
+                blender_path = p
+                break
+
+    if not blender_path:
+        return {"success": False, "error": "Blender not found. Install Blender and ensure it's in PATH."}
+
+    # Determine session directory
+    if existing_session and Path(existing_session).exists():
+        session_dir = Path(existing_session)
+    else:
+        # Create new session directory in project or next to video
+        base_dir = Path(project_dir) if project_dir else video_path.parent
+        session_dir = base_dir / ".vdg_blender" / video_path.stem
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+    session_json = session_dir / "session.json"
+    result_json = session_dir / "result.json"
+
+    # Check for existing .blend file to re-open
+    blend_file = session_dir / "project.blend"
+    existing_blend = str(blend_file) if blend_file.exists() else None
+
+    # Write session config
+    import json
+    session_data = {
+        "video_path": str(video_path.resolve()),
+        "first_frame": first_frame,
+        "last_frame": last_frame,
+        "mode": mode,
+        "blend_file": existing_blend,
+    }
+    with open(session_json, "w") as f:
+        json.dump(session_data, f, indent=2)
+
+    # Remove old result file if exists
+    if result_json.exists():
+        result_json.unlink()
+
+    # Find the vdg_bridge.py script
+    script_path = Path(__file__).parent.parent.parent / "scripts" / "vdg_bridge.py"
+    if not script_path.exists():
+        return {"success": False, "error": f"vdg_bridge.py not found at {script_path}"}
+
+    # Launch Blender
+    print(f"\n{'=' * 50}")
+    print("LAUNCHING BLENDER FOR TRACKING")
+    print(f"  Video: {video_path}")
+    print(f"  Session: {session_dir}")
+    if existing_blend:
+        print(f"  Re-opening: {existing_blend}")
+    print(f"{'=' * 50}\n")
+
+    cmd = [
+        blender_path,
+        "--python", str(script_path),
+        "--",
+        str(session_json),
+    ]
+
+    # Run Blender in a thread so we don't block the event loop
+    loop = asyncio.get_event_loop()
+
+    def run_blender():
+        try:
+            result = subprocess.run(cmd, capture_output=False)
+            return result.returncode
+        except Exception as e:
+            print(f"Blender launch error: {e}")
+            return -1
+
+    returncode = await loop.run_in_executor(None, run_blender)
+
+    print(f"\nBlender exited with code {returncode}")
+
+    # Read result
+    if result_json.exists():
+        with open(result_json) as f:
+            result = json.load(f)
+
+        track_files = result.get("track_files", [])
+        print(f"Tracks exported: {len(track_files)}")
+
+        return {
+            "success": True,
+            "session_dir": str(session_dir),
+            "blend_file": result.get("blend_file", ""),
+            "track_files": track_files,
+        }
+    else:
+        return {
+            "success": False,
+            "error": "Blender closed without exporting tracks. Use 'Export to VDG' button in Blender.",
+            "session_dir": str(session_dir),
+        }
+
+
 @app.post("/api/abort")
 async def abort_execution():
     """Abort the currently running graph execution."""
@@ -1358,6 +1612,7 @@ class GraphExecutor:
         'roi',
         'track_input',
         'track_output',
+        'blender_track',
     }
 
     def __init__(self):
@@ -3477,6 +3732,52 @@ def handle_video_output(inputs: dict, params: dict, executor) -> dict:
     return {'filepath': filepath}
 
 
+def handle_blender_track(inputs: dict, params: dict, executor) -> dict:
+    """Load track data from Blender session .crv files."""
+    from vdg.tracking.track_io import read_crv_file
+    from pathlib import Path
+    import glob
+
+    session_dir = params.get('session_dir', '').strip()
+    if not session_dir:
+        raise ValueError("No Blender session. Click 'Edit in Blender' first.")
+
+    session_path = Path(session_dir)
+    if not session_path.exists():
+        raise ValueError(f"Session directory not found: {session_dir}")
+
+    # Find all .crv files in session directory
+    crv_files = sorted(session_path.glob("*.crv"))
+    if not crv_files:
+        raise ValueError(f"No track files found in {session_dir}. Export tracks from Blender first.")
+
+    executor._log(f"  Loading {len(crv_files)} track(s) from Blender session")
+
+    mode = params.get('mode', 'single')
+    results = {}
+
+    # Load first track
+    raw_data = read_crv_file(crv_files[0])
+    track_data = {}
+    for frame, (x, y) in raw_data.items():
+        track_data[frame] = {'x': x, 'y': y, 'normalized': True}
+    results['track_data'] = track_data
+    executor._log(f"    Track 1: {crv_files[0].name} ({len(track_data)} frames)")
+
+    # Load second track if two_point mode and available
+    if mode == 'two_point' and len(crv_files) >= 2:
+        raw_data2 = read_crv_file(crv_files[1])
+        track_data2 = {}
+        for frame, (x, y) in raw_data2.items():
+            track_data2[frame] = {'x': x, 'y': y, 'normalized': True}
+        results['track_data_2'] = track_data2
+        executor._log(f"    Track 2: {crv_files[1].name} ({len(track_data2)} frames)")
+    else:
+        results['track_data_2'] = {}
+
+    return results
+
+
 def handle_track_input(inputs: dict, params: dict, executor) -> dict:
     """Load track data from a .crv file."""
     from vdg.tracking.track_io import read_crv_file
@@ -3811,6 +4112,7 @@ NODE_HANDLERS = {
     'roi': handle_roi,
     'feature_tracker': handle_feature_tracker,
     'feature_tracker_2p': handle_feature_tracker_2p,
+    'blender_track': handle_blender_track,
     'stabilizer': handle_stabilizer,
     'apply_transform': handle_apply_transform,
     'frame_average': handle_frame_average,
