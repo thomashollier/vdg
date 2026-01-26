@@ -64,9 +64,13 @@ def setup_tracking_layout():
     print(f"VDG Bridge: Loading layout template from {template_path}")
     bpy.ops.wm.open_mainfile(filepath=str(template_path))
 
+    # After loading, get fresh window/screen references from window_manager
+    window = bpy.context.window_manager.windows[0]
+    screen = window.screen
+
     # Find the clip editor area with CLIP view (main tracking view)
     clip_area = None
-    for area in bpy.context.screen.areas:
+    for area in screen.areas:
         if area.type == 'CLIP_EDITOR':
             for space in area.spaces:
                 if space.type == 'CLIP_EDITOR' and space.view == 'CLIP':
@@ -77,7 +81,7 @@ def setup_tracking_layout():
 
     # If no CLIP view found, use the first clip editor
     if not clip_area:
-        for area in bpy.context.screen.areas:
+        for area in screen.areas:
             if area.type == 'CLIP_EDITOR':
                 clip_area = area
                 break
@@ -161,11 +165,10 @@ def setup_movie_clip():
         video_dir = str(Path(video_path).parent)
         video_file = Path(video_path).name
 
-        override = bpy.context.copy()
-        override['area'] = area
-        override['space_data'] = space
+        # Get fresh window reference for context override
+        window = bpy.context.window_manager.windows[0]
 
-        with bpy.context.temp_override(**override):
+        with bpy.context.temp_override(window=window, area=area, space_data=space):
             bpy.ops.clip.open(directory=video_dir, files=[{"name": video_file}])
 
         clip = bpy.data.movieclips.get(clip_name)
@@ -184,8 +187,11 @@ def setup_movie_clip():
         print(f"VDG Bridge: Could not set color space: {e}")
 
     # Assign clip to ALL clip editor spaces in the layout
+    # Use window_manager to get valid screen reference
     clip_count = 0
-    for area in bpy.context.screen.areas:
+    window = bpy.context.window_manager.windows[0]
+    screen = window.screen
+    for area in screen.areas:
         if area.type == 'CLIP_EDITOR':
             for sp in area.spaces:
                 if sp.type == 'CLIP_EDITOR':

@@ -27,6 +27,145 @@ except ImportError:
 # Global abort flag for cancelling running jobs
 _abort_flag = False
 
+
+def normalize_props(props_input):
+    """
+    Extract VideoProperties from props input.
+    Handles both direct VideoProperties objects and dicts with 'props' key.
+    Returns (video_props, first_frame, last_frame).
+    """
+    if props_input is None:
+        return None, None, None
+
+    if isinstance(props_input, dict):
+        # New format: dict with 'props', 'first_frame', 'last_frame'
+        return (
+            props_input.get('props'),
+            props_input.get('first_frame'),
+            props_input.get('last_frame'),
+        )
+    else:
+        # Old format: direct VideoProperties object
+        return props_input, None, None
+
+
+def extract_video_metadata(filepath: str) -> dict:
+    """Extract metadata (date, GPS, etc.) from video using ffprobe."""
+    import subprocess
+    import json as json_module
+    from pathlib import Path
+
+    metadata = {
+        'creation_time': None,
+        'gps_latitude': None,
+        'gps_longitude': None,
+        'gps_altitude': None,
+        'make': None,
+        'model': None,
+    }
+
+    if not Path(filepath).exists():
+        return metadata
+
+    try:
+        # Use ffprobe to get metadata
+        cmd = [
+            'ffprobe', '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            filepath
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+
+        if result.returncode == 0:
+            data = json_module.loads(result.stdout)
+            tags = data.get('format', {}).get('tags', {})
+
+            # Creation time
+            creation_time = tags.get('creation_time') or tags.get('date')
+            if creation_time:
+                metadata['creation_time'] = creation_time
+
+            # GPS - try various tag formats
+            # iPhone format: com.apple.quicktime.location.ISO6709
+            location = tags.get('com.apple.quicktime.location.ISO6709') or tags.get('location')
+            if location:
+                # Parse ISO 6709 format: +34.0522-118.2437+100/
+                import re
+                match = re.match(r'([+-][\d.]+)([+-][\d.]+)([+-][\d.]+)?', location)
+                if match:
+                    metadata['gps_latitude'] = float(match.group(1))
+                    metadata['gps_longitude'] = float(match.group(2))
+                    if match.group(3):
+                        metadata['gps_altitude'] = float(match.group(3))
+
+            # Camera make/model
+            metadata['make'] = tags.get('com.apple.quicktime.make') or tags.get('make')
+            metadata['model'] = tags.get('com.apple.quicktime.model') or tags.get('model')
+
+    except Exception as e:
+        print(f"Warning: Could not extract metadata from {filepath}: {e}")
+
+    return metadata
+
+
+def write_image_metadata(filepath: str, metadata: dict) -> bool:
+    """Write metadata to image file using exiftool."""
+    import subprocess
+    from pathlib import Path
+
+    if not metadata or not Path(filepath).exists():
+        return False
+
+    # Build exiftool command
+    cmd = ['exiftool', '-overwrite_original']
+
+    if metadata.get('creation_time'):
+        # Convert to EXIF format if needed
+        date_str = metadata['creation_time']
+        # Try to parse and reformat
+        try:
+            from datetime import datetime
+            # Handle ISO format
+            if 'T' in date_str:
+                dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                date_str = dt.strftime('%Y:%m:%d %H:%M:%S')
+            cmd.extend([f'-DateTimeOriginal={date_str}', f'-CreateDate={date_str}'])
+        except:
+            cmd.extend([f'-DateTimeOriginal={date_str}'])
+
+    if metadata.get('gps_latitude') is not None and metadata.get('gps_longitude') is not None:
+        lat = metadata['gps_latitude']
+        lon = metadata['gps_longitude']
+        lat_ref = 'N' if lat >= 0 else 'S'
+        lon_ref = 'E' if lon >= 0 else 'W'
+        cmd.extend([
+            f'-GPSLatitude={abs(lat)}',
+            f'-GPSLatitudeRef={lat_ref}',
+            f'-GPSLongitude={abs(lon)}',
+            f'-GPSLongitudeRef={lon_ref}',
+        ])
+        if metadata.get('gps_altitude') is not None:
+            alt = metadata['gps_altitude']
+            cmd.extend([f'-GPSAltitude={abs(alt)}'])
+
+    if metadata.get('make'):
+        cmd.append(f'-Make={metadata["make"]}')
+
+    if metadata.get('model'):
+        cmd.append(f'-Model={metadata["model"]}')
+
+    cmd.append(filepath)
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return result.returncode == 0
+    except Exception as e:
+        print(f"Warning: Could not write metadata to {filepath}: {e}")
+        return False
+
+
 # File cache for autocomplete suggestions
 _file_cache = {
     'video': [],
@@ -136,7 +275,7 @@ NODE_DEFINITIONS = [
     NodeDefinition(
         id="video_input", title="Video Input", category="Input",
         inputs=[],
-        outputs=[NodePort("video_out", "video"), NodePort("props", "props")],
+        outputs=[NodePort("video_out", "video"), NodePort("props", "props"), NodePort("metadata", "metadata")],
         params=[
             NodeParam("filepath", "file", ""),
             NodeParam("first_frame", "int", 1, min=1),
@@ -150,6 +289,15 @@ NODE_DEFINITIONS = [
         id="image_input", title="Image Input", category="Input",
         inputs=[],
         outputs=[NodePort("image_out", "image")],
+        params=[
+            NodeParam("filepath", "file", ""),
+        ],
+        color="#4CAF50",
+    ),
+    NodeDefinition(
+        id="metadata_extract", title="Metadata Extract", category="Input",
+        inputs=[],
+        outputs=[NodePort("metadata", "metadata")],
         params=[
             NodeParam("filepath", "file", ""),
         ],
@@ -325,7 +473,7 @@ NODE_DEFINITIONS = [
     ),
     NodeDefinition(
         id="image_output", title="Image Output", category="Output",
-        inputs=[NodePort("image_in", "image")],
+        inputs=[NodePort("image_in", "image"), NodePort("metadata", "metadata", optional=True)],
         outputs=[],
         params=[
             NodeParam("filepath", "file", "output.png"),
@@ -2162,11 +2310,17 @@ class GraphExecutor:
             if auto_name:
                 source_filepath = data.get('source_filepath')
                 if source_filepath:
+                    # Get project directory name if available
+                    project_prefix = ''
+                    if self.project_dir:
+                        project_name = os.path.basename(self.project_dir.rstrip('/\\'))
+                        if project_name:
+                            project_prefix = project_name + '_'
                     base = os.path.splitext(os.path.basename(source_filepath))[0]
                     suffix = preview_path_param or '_preview.mp4'
                     if suffix and not suffix.startswith(('.', '_', '-')):
                         suffix = '_' + suffix
-                    preview_path = _ensure_video_extension(self._resolve_path(base + suffix))
+                    preview_path = _ensure_video_extension(self._resolve_path(project_prefix + base + suffix))
                 else:
                     preview_path = _ensure_video_extension(preview_path_param)
             else:
@@ -2242,11 +2396,17 @@ class GraphExecutor:
             if auto_name:
                 source_filepath = data.get('source_filepath')
                 if source_filepath:
+                    # Get project directory name if available
+                    project_prefix = ''
+                    if self.project_dir:
+                        project_name = os.path.basename(self.project_dir.rstrip('/\\'))
+                        if project_name:
+                            project_prefix = project_name + '_'
                     base = os.path.splitext(os.path.basename(source_filepath))[0]
                     suffix = preview_path_param or '_preview.mp4'
                     if suffix and not suffix.startswith(('.', '_', '-')):
                         suffix = '_' + suffix
-                    preview_path = _ensure_video_extension(self._resolve_path(base + suffix))
+                    preview_path = _ensure_video_extension(self._resolve_path(project_prefix + base + suffix))
                 else:
                     preview_path = _ensure_video_extension(preview_path_param)
             else:
@@ -2465,11 +2625,17 @@ class GraphExecutor:
             if auto_name:
                 source_filepath = data.get('source_filepath')
                 if source_filepath:
+                    # Get project directory name if available
+                    project_prefix = ''
+                    if self.project_dir:
+                        project_name = os.path.basename(self.project_dir.rstrip('/\\'))
+                        if project_name:
+                            project_prefix = project_name + '_'
                     base = os.path.splitext(os.path.basename(source_filepath))[0]
                     suffix = params.get('filepath', '').strip() or '.mp4'
                     if suffix and not suffix.startswith(('.', '_', '-')):
                         suffix = '_' + suffix
-                    filepath = self._resolve_path(base + suffix)
+                    filepath = self._resolve_path(project_prefix + base + suffix)
                 else:
                     filepath = self._resolve_path(params.get('filepath', 'output.mp4').strip())
             else:
@@ -2682,7 +2848,7 @@ class GraphExecutor:
                     last_frame = None if last_frame == -1 else last_frame
                     self.outputs[root_id] = {
                         'video_out': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
-                        'props': props,
+                        'props': {'props': props, 'first_frame': first_frame, 'last_frame': last_frame},
                         'source_filepath': filepath
                     }
                     # Store source filepath on executor for auto-naming in output nodes
@@ -2825,7 +2991,15 @@ def handle_video_input(inputs: dict, params: dict, executor) -> dict:
     props = get_video_properties(filepath)
     executor._log(f"  Properties: {props.width}x{props.height}, {props.fps:.2f}fps, {props.frame_count} frames")
 
+    # Extract metadata (date, GPS, etc.)
+    metadata = extract_video_metadata(filepath)
+    if metadata.get('creation_time'):
+        executor._log(f"  Metadata: date={metadata['creation_time']}")
+    if metadata.get('gps_latitude'):
+        executor._log(f"  Metadata: GPS={metadata['gps_latitude']:.6f}, {metadata['gps_longitude']:.6f}")
+
     # Return video reference - frames will be loaded on-demand by nodes that need them
+    # Props is a dict containing VideoProperties and frame range for downstream nodes
     return {
         'video_out': {
             'filepath': filepath,
@@ -2834,7 +3008,12 @@ def handle_video_input(inputs: dict, params: dict, executor) -> dict:
             'props': props,
             'frames': None,  # Frames loaded on-demand, not upfront
         },
-        'props': props
+        'props': {
+            'props': props,  # The VideoProperties object
+            'first_frame': first,
+            'last_frame': last,
+        },
+        'metadata': metadata,
     }
 
 
@@ -2869,6 +3048,31 @@ def handle_image_input(inputs: dict, params: dict, executor) -> dict:
     executor._log(f"  Size: {image.shape[1]}x{image.shape[0]}, dtype={image.dtype}")
 
     return {'image_out': image}
+
+
+def handle_metadata_extract(inputs: dict, params: dict, executor) -> dict:
+    """Extract metadata from a video or image file."""
+    from pathlib import Path
+
+    filepath = executor._resolve_path(params.get('filepath', '').strip())
+    if not filepath:
+        raise ValueError("No file specified for metadata extraction")
+
+    if not Path(filepath).exists():
+        raise ValueError(f"File not found: {filepath}")
+
+    executor._log(f"  Extracting metadata from: {filepath}")
+
+    metadata = extract_video_metadata(filepath)
+
+    if metadata.get('creation_time'):
+        executor._log(f"  Date: {metadata['creation_time']}")
+    if metadata.get('gps_latitude'):
+        executor._log(f"  GPS: {metadata['gps_latitude']:.6f}, {metadata['gps_longitude']:.6f}")
+    if metadata.get('make') or metadata.get('model'):
+        executor._log(f"  Camera: {metadata.get('make', '')} {metadata.get('model', '')}")
+
+    return {'metadata': metadata}
 
 
 def handle_roi(inputs: dict, params: dict, executor) -> dict:
@@ -3168,17 +3372,8 @@ def handle_stabilizer(inputs: dict, params: dict, executor) -> dict:
     x_flip = params.get('x_flip', False)
     y_flip = params.get('y_flip', False)
 
-    # props can be either a VideoProperties object or a video_out dict
-    # If it's a dict (video_out), extract props and frame range from it
-    video_first_frame = None
-    video_last_frame = None
-    props = props_input
-
-    if isinstance(props_input, dict):
-        # It's a video_out dict - extract frame range and props
-        video_first_frame = props_input.get('first_frame')
-        video_last_frame = props_input.get('last_frame')
-        props = props_input.get('props')
+    # Extract VideoProperties and frame range from props input
+    props, video_first_frame, video_last_frame = normalize_props(props_input)
 
     # Get video dimensions for denormalization
     if props and hasattr(props, 'width'):
@@ -3622,12 +3817,19 @@ def _resolve_output_path(params: dict, inputs: dict, executor, default_ext: str)
             source_filepath = executor.source_filepath
 
         if source_filepath:
+            # Get project directory name if available
+            project_prefix = ''
+            if executor.project_dir:
+                project_name = os.path.basename(executor.project_dir.rstrip('/\\'))
+                if project_name:
+                    project_prefix = project_name + '_'
+
             base = os.path.splitext(os.path.basename(source_filepath))[0]
             suffix = filepath_param or default_ext
             # Ensure suffix starts with underscore or dot if it's just a name
             if suffix and not suffix.startswith(('.', '_', '-')):
                 suffix = '_' + suffix
-            filepath = base + suffix
+            filepath = project_prefix + base + suffix
         else:
             # Fallback if no source filepath available
             filepath = filepath_param or f'output{default_ext}'
@@ -3677,6 +3879,14 @@ def handle_image_output(inputs: dict, params: dict, executor) -> dict:
         raise ValueError(f"Failed to write image to {filepath}")
 
     executor._log(f"  Saved {filepath} ({bit_depth}-bit, {image.shape[1]}x{image.shape[0]})")
+
+    # Write metadata if provided
+    metadata = inputs.get('metadata')
+    if metadata:
+        if write_image_metadata(filepath, metadata):
+            executor._log(f"  Wrote metadata: date={metadata.get('creation_time')}, GPS={metadata.get('gps_latitude')}")
+        else:
+            executor._log(f"  Warning: Could not write metadata (is exiftool installed?)")
 
     # Refresh file cache
     refresh_file_cache()
@@ -3811,7 +4021,7 @@ def handle_track_input(inputs: dict, params: dict, executor) -> dict:
 def handle_track_output(inputs: dict, params: dict, executor) -> dict:
     """Save track data to .crv file."""
     track_data = inputs.get('track_data', {})
-    props = inputs.get('props')
+    props_input = inputs.get('props')
 
     if not track_data:
         raise ValueError("No track data to save")
@@ -3823,6 +4033,7 @@ def handle_track_output(inputs: dict, params: dict, executor) -> dict:
     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
 
     # Get dimensions from props
+    props, _, _ = normalize_props(props_input)
     if props and hasattr(props, 'width'):
         w, h = props.width, props.height
     else:
@@ -4109,6 +4320,7 @@ def handle_gaussian_filter(inputs: dict, params: dict, executor) -> dict:
 NODE_HANDLERS = {
     'video_input': handle_video_input,
     'image_input': handle_image_input,
+    'metadata_extract': handle_metadata_extract,
     'roi': handle_roi,
     'feature_tracker': handle_feature_tracker,
     'feature_tracker_2p': handle_feature_tracker_2p,
