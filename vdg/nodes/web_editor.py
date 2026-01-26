@@ -184,6 +184,7 @@ NODE_DEFINITIONS = [
             NodeParam("win_size", "int", 21, min=11, max=101),
             NodeParam("pyramid_levels", "int", 3, min=0, max=6),
             NodeParam("preview_path", "string", ""),
+            NodeParam("auto_name", "bool", False),
         ],
         color="#2196F3",
     ),
@@ -205,6 +206,7 @@ NODE_DEFINITIONS = [
             NodeParam("win_size", "int", 21, min=11, max=101),
             NodeParam("pyramid_levels", "int", 3, min=0, max=6),
             NodeParam("preview_path", "string", ""),
+            NodeParam("auto_name", "bool", False),
         ],
         color="#2196F3",
     ),
@@ -301,6 +303,7 @@ NODE_DEFINITIONS = [
         outputs=[],
         params=[
             NodeParam("filepath", "file", "output.mp4"),
+            NodeParam("auto_name", "bool", False),
             NodeParam("use_hardware", "bool", True),
             NodeParam("bitrate", "string", "20M"),
         ],
@@ -312,6 +315,7 @@ NODE_DEFINITIONS = [
         outputs=[],
         params=[
             NodeParam("filepath", "file", "output.png"),
+            NodeParam("auto_name", "bool", False),
             NodeParam("bit_depth", "choice", "16", choices=["8", "16"]),
         ],
         color="#9C27B0",
@@ -322,6 +326,7 @@ NODE_DEFINITIONS = [
         outputs=[],
         params=[
             NodeParam("filepath", "file", "track.crv"),
+            NodeParam("auto_name", "bool", False),
             NodeParam("center_mode", "choice", "centroid", choices=["centroid", "roi_center", "median"]),
         ],
         color="#9C27B0",
@@ -1359,6 +1364,7 @@ class GraphExecutor:
         self.outputs = {}  # node_id -> {port_name: value}
         self.log = []
         self.project_dir = None  # Project directory for relative paths
+        self.source_filepath = None  # Source video filepath for auto-naming
         self.aborted = False
 
     def _check_abort(self) -> bool:
@@ -1638,6 +1644,8 @@ class GraphExecutor:
         frame_count = 0
 
         # Choose reader based on HLG convert setting
+        # Pass abort callback so readers can check for abort before blocking reads
+        abort_cb = lambda: self.aborted or _abort_flag
         if hlg_convert:
             # HLG/HDR to SDR tonemapping via FFmpeg
             hlg_filter = (
@@ -1646,10 +1654,10 @@ class GraphExecutor:
                 "zscale=t=bt709:m=bt709:r=tv,format=bgr24"
             )
             self._log(f"  HLG Convert: enabled (FFmpeg tonemapping)")
-            reader_ctx = FFmpegReader(filepath, first_frame, last_frame, vf=hlg_filter)
+            reader_ctx = FFmpegReader(filepath, first_frame, last_frame, vf=hlg_filter, abort_callback=abort_cb)
         else:
             self._log(f"  Hardware decode: {use_hardware}")
-            reader_ctx = VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware)
+            reader_ctx = VideoReader(filepath, first_frame, last_frame, use_hardware=use_hardware, abort_callback=abort_cb)
 
         with reader_ctx as reader:
             total_frames = reader.frame_count
@@ -1658,6 +1666,7 @@ class GraphExecutor:
             for frame_num, frame in reader:
                 # Check for abort
                 if self._check_abort():
+                    reader.close()  # Close immediately to interrupt any blocking reads
                     break
 
                 # Track per-node outputs for this frame
@@ -1666,7 +1675,7 @@ class GraphExecutor:
                     root_id: {
                         'video_out': frame,
                         'video': frame,  # Alias for old port name
-                        '_data': {'frame_num': frame_num, 'props': props}
+                        '_data': {'frame_num': frame_num, 'props': props, 'source_filepath': filepath}
                     }
                 }
 
@@ -1780,11 +1789,19 @@ class GraphExecutor:
                 if frame_count % 100 == 0:
                     self._log(f"  Processed {frame_count}/{total_frames} frames...")
 
+                # Check abort after processing each frame (more responsive)
+                if self._check_abort():
+                    break
+
         stream_elapsed = time.time() - chain_start
         fps = frame_count / stream_elapsed if stream_elapsed > 0 else 0
-        self._log(f"  Streamed {frame_count} frames in {stream_elapsed:.2f}s ({fps:.1f} fps)")
 
-        # Finalize each node and store outputs
+        if self.aborted:
+            self._log(f"  ABORTED after {frame_count} frames in {stream_elapsed:.2f}s")
+        else:
+            self._log(f"  Streamed {frame_count} frames in {stream_elapsed:.2f}s ({fps:.1f} fps)")
+
+        # Finalize each node and store outputs (still do this on abort to close writers)
         for nid in chain_nodes:
             if nid == root_id:
                 continue
@@ -1869,6 +1886,7 @@ class GraphExecutor:
         """Process one frame through feature tracker."""
         from vdg.tracking import FeatureTracker
         import cv2
+        import os
 
         if state['tracker'] is None:
             roi = inputs.get('roi')
@@ -1884,7 +1902,20 @@ class GraphExecutor:
             state['initial_roi'] = roi
 
             # Initialize preview video writer if path is set
-            preview_path = _ensure_video_extension(params.get('preview_path', '').strip())
+            preview_path_param = params.get('preview_path', '').strip()
+            auto_name = params.get('auto_name', False)
+            if auto_name:
+                source_filepath = data.get('source_filepath')
+                if source_filepath:
+                    base = os.path.splitext(os.path.basename(source_filepath))[0]
+                    suffix = preview_path_param or '_preview.mp4'
+                    if suffix and not suffix.startswith(('.', '_', '-')):
+                        suffix = '_' + suffix
+                    preview_path = _ensure_video_extension(self._resolve_path(base + suffix))
+                else:
+                    preview_path = _ensure_video_extension(preview_path_param)
+            else:
+                preview_path = _ensure_video_extension(preview_path_param)
             if preview_path:
                 h, w = frame.shape[:2]
                 fps = data.get('props').fps if data.get('props') else 30
@@ -1907,11 +1938,11 @@ class GraphExecutor:
         if state.get('preview_writer'):
             preview = frame.copy()
             # Draw tracked points
-            if tracker.points is not None:
-                for pt in tracker.points.reshape(-1, 2):
+            if tracker.points is not None and len(tracker.points) > 0:
+                pts = tracker.points.reshape(-1, 2)
+                for pt in pts:
                     cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (0, 255, 0), -1)
                 # Draw centroid
-                pts = tracker.points.reshape(-1, 2)
                 cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
                 cv2.circle(preview, (cx, cy), 8, (0, 255, 255), 2)
                 cv2.drawMarker(preview, (cx, cy), (0, 255, 255), cv2.MARKER_CROSS, 16, 2)
@@ -1931,6 +1962,7 @@ class GraphExecutor:
         """Process one frame through two-point feature tracker."""
         from vdg.tracking import FeatureTracker
         import cv2
+        import os
 
         if state['tracker'] is None:
             roi1 = inputs.get('roi1')
@@ -1950,7 +1982,20 @@ class GraphExecutor:
             state['initial_roi2'] = roi2
 
             # Initialize preview video writer if path is set
-            preview_path = _ensure_video_extension(params.get('preview_path', '').strip())
+            preview_path_param = params.get('preview_path', '').strip()
+            auto_name = params.get('auto_name', False)
+            if auto_name:
+                source_filepath = data.get('source_filepath')
+                if source_filepath:
+                    base = os.path.splitext(os.path.basename(source_filepath))[0]
+                    suffix = preview_path_param or '_preview.mp4'
+                    if suffix and not suffix.startswith(('.', '_', '-')):
+                        suffix = '_' + suffix
+                    preview_path = _ensure_video_extension(self._resolve_path(base + suffix))
+                else:
+                    preview_path = _ensure_video_extension(preview_path_param)
+            else:
+                preview_path = _ensure_video_extension(preview_path_param)
             if preview_path:
                 h, w = frame.shape[:2]
                 fps = data.get('props').fps if data.get('props') else 30
@@ -1982,10 +2027,10 @@ class GraphExecutor:
         if state.get('preview_writer'):
             preview = frame.copy()
             # Draw tracker 1 (green)
-            if tracker1.points is not None:
-                for pt in tracker1.points.reshape(-1, 2):
-                    cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (0, 255, 0), -1)
+            if tracker1.points is not None and len(tracker1.points) > 0:
                 pts = tracker1.points.reshape(-1, 2)
+                for pt in pts:
+                    cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (0, 255, 0), -1)
                 cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
                 cv2.circle(preview, (cx, cy), 8, (0, 255, 0), 2)
                 cv2.drawMarker(preview, (cx, cy), (0, 255, 0), cv2.MARKER_CROSS, 16, 2)
@@ -1997,10 +2042,10 @@ class GraphExecutor:
                 cv2.rectangle(preview, (rx, ry), (rx + rw, ry + rh), (0, 200, 0), 1)
 
             # Draw tracker 2 (blue)
-            if tracker2.points is not None:
-                for pt in tracker2.points.reshape(-1, 2):
-                    cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (255, 0, 0), -1)
+            if tracker2.points is not None and len(tracker2.points) > 0:
                 pts = tracker2.points.reshape(-1, 2)
+                for pt in pts:
+                    cv2.circle(preview, (int(pt[0]), int(pt[1])), 4, (255, 0, 0), -1)
                 cx, cy = int(pts[:, 0].mean()), int(pts[:, 1].mean())
                 cv2.circle(preview, (cx, cy), 8, (255, 0, 0), 2)
                 cv2.drawMarker(preview, (cx, cy), (255, 0, 0), cv2.MARKER_CROSS, 16, 2)
@@ -2156,11 +2201,24 @@ class GraphExecutor:
     def _stream_video_output(self, frame, data, state, params, is_first):
         """Write one frame to video output."""
         import cv2
+        import os
         import numpy as np
         from pathlib import Path
 
         if is_first:
-            filepath = self._resolve_path(params.get('filepath', 'output.mp4').strip())
+            auto_name = params.get('auto_name', False)
+            if auto_name:
+                source_filepath = data.get('source_filepath')
+                if source_filepath:
+                    base = os.path.splitext(os.path.basename(source_filepath))[0]
+                    suffix = params.get('filepath', '').strip() or '.mp4'
+                    if suffix and not suffix.startswith(('.', '_', '-')):
+                        suffix = '_' + suffix
+                    filepath = self._resolve_path(base + suffix)
+                else:
+                    filepath = self._resolve_path(params.get('filepath', 'output.mp4').strip())
+            else:
+                filepath = self._resolve_path(params.get('filepath', 'output.mp4').strip())
             # Ensure parent directory exists
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             h, w = frame.shape[:2]
@@ -2369,8 +2427,12 @@ class GraphExecutor:
                     last_frame = None if last_frame == -1 else last_frame
                     self.outputs[root_id] = {
                         'video_out': {'filepath': filepath, 'first_frame': first_frame, 'last_frame': last_frame, 'props': props},
-                        'props': props
+                        'props': props,
+                        'source_filepath': filepath
                     }
+                    # Store source filepath on executor for auto-naming in output nodes
+                    if self.source_filepath is None:
+                        self.source_filepath = filepath
                     video_inputs_loaded.add(root_id)
                     self._log(f"  Pre-loaded props for {root_id}: {props.width}x{props.height}")
 
@@ -3281,6 +3343,45 @@ def handle_frame_average(inputs: dict, params: dict, executor) -> dict:
     return {'image_out': result, 'alpha_out': alpha}
 
 
+def _resolve_output_path(params: dict, inputs: dict, executor, default_ext: str) -> str:
+    """Resolve output path, optionally using source filename as base."""
+    import os
+
+    filepath_param = params.get('filepath', '').strip()
+    auto_name = params.get('auto_name', False)
+
+    if auto_name:
+        # Get source filepath from metadata in inputs
+        source_filepath = None
+        for key in inputs:
+            val = inputs[key]
+            if isinstance(val, dict) and '_data' in val:
+                source_filepath = val['_data'].get('source_filepath')
+                break
+            if isinstance(val, dict) and 'source_filepath' in val:
+                source_filepath = val.get('source_filepath')
+                break
+
+        # Fallback to executor's source_filepath (set during video_input pre-loading)
+        if not source_filepath and hasattr(executor, 'source_filepath'):
+            source_filepath = executor.source_filepath
+
+        if source_filepath:
+            base = os.path.splitext(os.path.basename(source_filepath))[0]
+            suffix = filepath_param or default_ext
+            # Ensure suffix starts with underscore or dot if it's just a name
+            if suffix and not suffix.startswith(('.', '_', '-')):
+                suffix = '_' + suffix
+            filepath = base + suffix
+        else:
+            # Fallback if no source filepath available
+            filepath = filepath_param or f'output{default_ext}'
+    else:
+        filepath = filepath_param or f'output{default_ext}'
+
+    return executor._resolve_path(filepath)
+
+
 def handle_image_output(inputs: dict, params: dict, executor) -> dict:
     """Save image to file."""
     import cv2
@@ -3293,7 +3394,7 @@ def handle_image_output(inputs: dict, params: dict, executor) -> dict:
     if image is None:
         raise ValueError("No image to save")
 
-    filepath = executor._resolve_path(params.get('filepath', '').strip() or 'output.png')
+    filepath = _resolve_output_path(params, inputs, executor, '.png')
 
     # Ensure parent directory exists
     path = Path(filepath)
@@ -3351,7 +3452,7 @@ def handle_video_output(inputs: dict, params: dict, executor) -> dict:
     if not actual_frames:
         raise ValueError("No frames to save")
 
-    filepath = executor._resolve_path(params.get('filepath', 'output.mp4').strip())
+    filepath = _resolve_output_path(params, inputs, executor, '.mp4')
 
     # Ensure parent directory exists
     from pathlib import Path
@@ -3414,7 +3515,7 @@ def handle_track_output(inputs: dict, params: dict, executor) -> dict:
     if not track_data:
         raise ValueError("No track data to save")
 
-    filepath = executor._resolve_path(params.get('filepath', 'track.crv').strip())
+    filepath = _resolve_output_path(params, inputs, executor, '.crv')
 
     # Ensure parent directory exists
     from pathlib import Path

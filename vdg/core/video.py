@@ -16,7 +16,7 @@ Hardware acceleration is configured via vdg.core.hardware:
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 import platform
 import subprocess
 import shutil
@@ -87,21 +87,24 @@ class VideoReader:
         first_frame: int = 1,
         last_frame: int | None = None,
         use_hardware: bool | None = None,
+        abort_callback: Callable[[], bool] | None = None,
     ):
         """
         Initialize the video reader.
-        
+
         Args:
             path: Path to video file
             first_frame: First frame to read (1-indexed)
             last_frame: Last frame to read (None = end of video)
             use_hardware: Override hardware acceleration setting (None = use global config)
+            abort_callback: Optional callback that returns True if reading should abort
         """
         self.path = Path(path)
         self.first_frame = first_frame
         self.last_frame = last_frame
         self._use_hardware = use_hardware
-        
+        self._abort_callback = abort_callback
+
         self._cap: cv2.VideoCapture | None = None
         self._props: VideoProperties | None = None
         self._ffmpeg_process: subprocess.Popen | None = None
@@ -293,9 +296,12 @@ class VideoReader:
         """Iterate over frames in the range."""
         if self._cap is None and self._ffmpeg_process is None:
             self.open()
-        
+
         current_frame = self.first_frame
         while current_frame <= (self.last_frame or self.properties.frame_count):
+            # Check abort before reading (avoid blocking read if abort requested)
+            if self._abort_callback and self._abort_callback():
+                break
             ret, frame = self.read_frame()
             if not ret:
                 break
@@ -519,6 +525,7 @@ class FFmpegReader:
         vf: str | None = None,
         pix_fmt: str = "bgr24",
         hwaccel: str | None = None,
+        abort_callback: Callable[[], bool] | None = None,
     ):
         """
         Initialize the FFmpeg reader.
@@ -530,6 +537,7 @@ class FFmpegReader:
             vf: FFmpeg video filter string (e.g., "scale=1920:1080,eq=gamma=1.2")
             pix_fmt: Output pixel format (default: bgr24 for OpenCV compatibility)
             hwaccel: Hardware acceleration method (e.g., "videotoolbox", "cuda", "vaapi")
+            abort_callback: Optional callback that returns True if reading should abort
         """
         self.path = Path(path)
         self.first_frame = first_frame
@@ -537,6 +545,7 @@ class FFmpegReader:
         self.vf = vf
         self.pix_fmt = pix_fmt
         self.hwaccel = hwaccel
+        self._abort_callback = abort_callback
 
         self._props: VideoProperties | None = None
         self._process: subprocess.Popen | None = None
@@ -752,6 +761,9 @@ class FFmpegReader:
             self.open()
 
         while self._current_frame <= self.last_frame:
+            # Check abort before reading (avoid blocking read if abort requested)
+            if self._abort_callback and self._abort_callback():
+                break
             ret, frame = self.read_frame()
             if not ret:
                 break
