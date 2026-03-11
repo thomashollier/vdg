@@ -74,8 +74,26 @@ Load pre-built workflows from the `workflows/` directory:
 - **Save/Save As**: Save workflows to JSON files; Save remembers the current file
 - **Load**: Open existing workflow files
 - **Run/Abort**: Execute workflows with ability to abort long-running jobs
+- **Run Selected**: Execute only selected nodes and their upstream dependencies
+- **Play Icon**: Output nodes display a ▶ button to run that node + upstream
+- **Undo/Redo**: Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z with 50-level undo stack
+- **Cut/Copy/Paste**: Ctrl/Cmd+X/C/V — copies nodes with their internal connections
+- **Multi-Select**: Shift-click nodes to build a selection; Delete removes all selected
+- **Relaunch Server**: Restart the server process from the toolbar
 - **Zoom**: Mouse wheel or +/- buttons to zoom the canvas
 - **Pan**: Click and drag on empty canvas to pan
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Ctrl/Cmd+Z | Undo |
+| Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y | Redo |
+| Ctrl/Cmd+C | Copy selected nodes |
+| Ctrl/Cmd+X | Cut selected nodes |
+| Ctrl/Cmd+V | Paste nodes |
+| Delete / Backspace | Delete selected nodes |
+| Shift+Click | Multi-select nodes |
 
 ### Available Nodes
 
@@ -92,6 +110,7 @@ Load pre-built workflows from the `workflows/` directory:
 |------|-------------|--------|---------|
 | **Feature Tracker** | Track single point in video | `video_in`, `roi` | `points`, `track_data` |
 | **Feature Tracker 2P** | Track two points in single pass | `video_in`, `roi1`, `roi2` | `track1`, `track2` |
+| **Blender Track** | Blender round-trip tracking | `video_in` | `track01_data`, `track02_data` |
 | **Stabilizer** | Compute transforms from tracks | `track1`, `track2`, `props` | `transforms` |
 
 #### Processing Nodes

@@ -22,6 +22,16 @@ Python framework for video processing: point tracking, stabilization, frame aver
 ## Node Editor
 Web-based visual graph editor at `vdg/nodes/web_editor.py`.
 
+### Editor Features
+- **Undo/Redo**: Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z (50-level stack)
+- **Cut/Copy/Paste**: Ctrl/Cmd+X/C/V — preserves connections between selected nodes
+- **Multi-select**: Shift-click to select multiple nodes
+- **Play icon**: Output nodes show a ▶ button to execute that node + upstream
+- **Run Selected**: Execute only selected nodes and their upstream dependencies
+- **Relaunch**: Toolbar button to restart the server process
+- **Delete**: Delete/Backspace removes selected node(s)
+- **Zoom**: Mouse wheel or +/- buttons; pan by dragging empty canvas
+
 ### Port Naming Convention
 - Inputs: `video_in`, `image_in`, `mask_in`, `alpha_in`
 - Outputs: `video_out`, `image_out`, `mask_out`, `alpha_out`
@@ -31,6 +41,7 @@ Web-based visual graph editor at `vdg/nodes/web_editor.py`.
 - **image_input**: Load existing images (PNG, TIFF, EXR, etc.)
 - **feature_tracker**: Single-point tracking with ROI
 - **feature_tracker_2p**: Two-point tracking in single pass
+- **blender_track**: Blender round-trip tracking (outputs `track01_data`, `track02_data`)
 - **stabilizer**: Compute transforms from track data
 - **apply_transform**: Apply stabilization with padding/offset
 - **frame_average**: Accumulate frames with alpha
