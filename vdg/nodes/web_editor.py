@@ -362,8 +362,8 @@ NODE_DEFINITIONS = [
         id="blender_track", title="Blender Track", category="Tracking",
         inputs=[NodePort("video_in", "video")],
         outputs=[
-            NodePort("track_data", "track_data"),
-            NodePort("track_data_2", "track_data"),
+            NodePort("track01_data", "track_data"),
+            NodePort("track02_data", "track_data"),
         ],
         params=[
             NodeParam("edit_blender", "button", "Edit in Blender"),
@@ -564,15 +564,21 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         #zoom-level { font-size: 11px; min-width: 40px; text-align: center; color: #aaa; }
         .node { position: absolute; min-width: 140px; background: #252545; border: 2px solid #444; border-radius: 6px; cursor: move; user-select: none; font-size: 11px; z-index: 3; }
         .node.selected { border-color: #4fc3f7; box-shadow: 0 0 15px rgba(79,195,247,0.3); }
+        .node.multi-selected { border-color: #ffa726; box-shadow: 0 0 15px rgba(255,167,38,0.3); }
+        .node-play { position: absolute; top: -20px; left: 50%; transform: translateX(-50%);
+          width: 20px; height: 20px; background: #4caf50; border-radius: 50%; cursor: pointer;
+          display: flex; align-items: center; justify-content: center; font-size: 10px;
+          color: white; z-index: 4; opacity: 0.8; }
+        .node-play:hover { opacity: 1; transform: translateX(-50%) scale(1.2); }
         .node-hdr { padding: 6px 10px; border-radius: 4px 4px 0 0; font-weight: 600; font-size: 11px; }
         .node-body { padding: 6px 10px; }
         .port { display: flex; align-items: center; margin: 4px 0; color: #aaa; position: relative; }
         .port.in { padding-left: 12px; }
         .port.out { padding-right: 12px; justify-content: flex-end; }
-        .dot { width: 8px; height: 8px; background: #666; border: 2px solid #888; border-radius: 50%; position: absolute; cursor: crosshair; pointer-events: auto; }
+        .dot { width: 12px; height: 12px; background: #666; border: 2px solid #888; border-radius: 50%; position: absolute; cursor: crosshair; pointer-events: auto; }
         .dot:hover { background: #4fc3f7; }
-        .port.in .dot { left: -5px; }
-        .port.out .dot { right: -5px; }
+        .port.in .dot { left: -7px; }
+        .port.out .dot { right: -7px; }
         .port.opt { opacity: 0.5; }
         .props { width: 220px; background: #16213e; padding: 12px; border-left: 1px solid #333; overflow-y: auto; }
         .props h3 { font-size: 13px; margin-bottom: 10px; color: #4fc3f7; }
@@ -585,7 +591,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         .file-input-wrap input { flex: 1; border-radius: 3px 0 0 3px; }
         .file-browse-btn { padding: 6px 8px; background: #444; border: 1px solid #333; border-left: none; border-radius: 0 3px 3px 0; color: #aaa; cursor: pointer; font-size: 10px; }
         .file-browse-btn:hover { background: #555; color: #fff; }
-        .del-btn { margin-top: 16px; width: 100%; padding: 8px; background: #c0392b; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; }
+
         .status { position: absolute; bottom: 10px; left: 220px; background: rgba(22,33,62,0.9); padding: 6px 12px; border-radius: 4px; font-size: 11px; color: #888; }
         .conn { stroke: #4fc3f7; stroke-width: 2; fill: none; }
         .conn.conn-hover { stroke: #ff5722; stroke-width: 3; }
@@ -634,10 +640,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             <div class="toolbar">
                 <button id="run-btn" onclick="execute()">▶ Run</button>
                 <button id="abort-btn" class="abort" onclick="abort()" style="display:none;">⏹ Abort</button>
+                <button id="run-sel-btn" class="sec" onclick="executeSelected()" style="display:none;">▶ Run Selected</button>
                 <button class="sec" onclick="save()">Save</button>
                 <button class="sec" onclick="saveAs()">Save As</button>
                 <button class="sec" onclick="load()">Load</button>
                 <button class="sec" onclick="clearWorkflow()">New</button>
+                <button class="sec" onclick="relaunchServer()" title="Relaunch server">⟳</button>
                 <span class="zoom-controls">
                     <button class="sec small" onclick="zoomOut()">−</button>
                     <span id="zoom-level">100%</span>
@@ -675,7 +683,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     </div>
 <script>
 const DEFS = ''' + json.dumps(get_nodes_json()) + ''';
-let nodes = [], conns = [], sel = null, dragN = null, dragC = null, nid = 0;
+let nodes = [], conns = [], sel = null, dragN = null, dragC = null;
+let selectedNodes = new Set();
+let undoStack = [], redoStack = [], clipboard = null;
+let dragStartPos = null, dragUndoState = null;
+const MAX_UNDO = 50;
+function genId() { return 'n_' + crypto.randomUUID().slice(0,8); }
 let off = {x: 0, y: 0}, pan = {x: 0, y: 0}, panning = false, panStart = {};
 let zoom = 1;
 const ZOOM_MIN = 0.25, ZOOM_MAX = 2, ZOOM_STEP = 0.1;
@@ -745,7 +758,7 @@ function init() {
     };
     area.onmousedown = e => {
         if (e.target === area || e.target.id === 'canvas') {
-            panning = true; panStart = {x: e.clientX - pan.x, y: e.clientY - pan.y}; desel();
+            panning = true; panStart = {x: e.clientX - pan.x, y: e.clientY - pan.y}; clearMultiSelect(); desel();
         }
     };
     area.onmousemove = e => {
@@ -829,8 +842,9 @@ function zoomOut() {
 }
 
 function addNode(t, x, y) {
+    saveUndo();
     const d = DEFS.find(dd => dd.id === t);
-    const n = {id: 'n' + (++nid), type: t, x, y, params: {}};
+    const n = {id: genId(), type: t, x, y, params: {}};
     d.params.forEach(p => n.params[p.name] = p.default);
     nodes.push(n);
     render(n);
@@ -847,23 +861,39 @@ function render(n) {
     d.inputs.forEach(i => { h += '<div class="port in' + (i.optional ? ' opt' : '') + '"><span class="dot" data-n="' + n.id + '" data-p="' + i.name + '" data-d="in"></span>' + i.name + '</div>'; });
     d.outputs.forEach(o => { h += '<div class="port out"><span class="dot" data-n="' + n.id + '" data-p="' + o.name + '" data-d="out"></span>' + o.name + '</div>'; });
     h += '</div>';
+    if (d.outputs.length === 0) { h = '<div class="node-play" onclick="event.stopPropagation(); executeNode(\\''+n.id+'\\')" title="Run this node">&#9654;</div>' + h; }
     el.innerHTML = h;
-    
+
     el.onmousedown = e => {
         if (e.target.classList.contains('dot')) { startConn(e.target); e.stopPropagation(); return; }
-        select(n); dragN = n; off = {x: e.clientX - n.x * zoom - pan.x, y: e.clientY - n.y * zoom - pan.y}; e.stopPropagation();
+        if (e.shiftKey) {
+            if (selectedNodes.has(n)) { selectedNodes.delete(n); document.getElementById(n.id).classList.remove('multi-selected'); }
+            else { selectedNodes.add(n); document.getElementById(n.id).classList.add('multi-selected'); }
+            updateRunSelBtn();
+        } else {
+            clearMultiSelect();
+            select(n);
+        }
+        dragN = n; dragUndoState = {nodes: JSON.parse(JSON.stringify(nodes)), conns: JSON.parse(JSON.stringify(conns))}; dragStartPos = {x: n.x, y: n.y}; off = {x: e.clientX - n.x * zoom - pan.x, y: e.clientY - n.y * zoom - pan.y}; e.stopPropagation();
     };
     document.addEventListener('mousemove', e => {
         if (dragN === n) { n.x = (e.clientX - off.x - pan.x) / zoom; n.y = (e.clientY - off.y - pan.y) / zoom; el.style.left = n.x + 'px'; el.style.top = n.y + 'px'; drawConns(); }
     });
-    document.addEventListener('mouseup', () => { dragN = null; });
+    document.addEventListener('mouseup', () => {
+        if (dragN === n && dragStartPos && (n.x !== dragStartPos.x || n.y !== dragStartPos.y) && dragUndoState) {
+            undoStack.push(dragUndoState); if (undoStack.length > MAX_UNDO) undoStack.shift(); redoStack = [];
+        }
+        dragN = null; dragUndoState = null; dragStartPos = null;
+    });
     el.querySelectorAll('.dot').forEach(dot => { dot.onmouseup = () => { if (dragC) endConn(dot); }; });
     
     document.getElementById('canvas').appendChild(el);
 }
 
-function select(n) { desel(); sel = n; document.getElementById(n.id).classList.add('selected'); showProps(n); }
-function desel() { if (sel) { const e = document.getElementById(sel.id); if (e) e.classList.remove('selected'); } sel = null; document.getElementById('props').innerHTML = '<div class="props-empty">Select a node</div>'; }
+function select(n) { desel(); sel = n; document.getElementById(n.id).classList.add('selected'); showProps(n); updateRunSelBtn(); }
+function desel() { if (sel) { const e = document.getElementById(sel.id); if (e) e.classList.remove('selected'); } sel = null; document.getElementById('props').innerHTML = '<div class="props-empty">Select a node</div>'; updateRunSelBtn(); }
+function clearMultiSelect() { selectedNodes.forEach(n => { const e = document.getElementById(n.id); if (e) e.classList.remove('multi-selected'); }); selectedNodes.clear(); updateRunSelBtn(); }
+function updateRunSelBtn() { const b = document.getElementById('run-sel-btn'); if (b) b.style.display = (sel || selectedNodes.size > 0) ? '' : 'none'; }
 
 function showProps(n) {
     const d = DEFS.find(dd => dd.id === n.type);
@@ -895,10 +925,10 @@ function showProps(n) {
             h += '</div>';
         }
     });
-    h += '<button class="del-btn" onclick="delNode()">Delete Node</button>';
     document.getElementById('props').innerHTML = h;
     document.querySelectorAll('#props input, #props select').forEach(el => {
         el.onchange = e => {
+            saveUndo();
             const v = e.target.type === 'checkbox' ? e.target.checked : (e.target.type === 'number' ? (e.target.step === '0.1' ? parseFloat(e.target.value) : parseInt(e.target.value)) : e.target.value);
             n.params[e.target.dataset.p] = v;
         };
@@ -925,6 +955,75 @@ async function loadFileSuggestions(paramName, fileType) {
     }
 }
 
+function saveUndo() {
+    undoStack.push({nodes: JSON.parse(JSON.stringify(nodes)), conns: JSON.parse(JSON.stringify(conns))});
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
+}
+function restoreState(state) {
+    // Remove existing node elements
+    nodes.forEach(n => document.getElementById(n.id)?.remove());
+    nodes = state.nodes;
+    conns = state.conns;
+    sel = null; selectedNodes.clear();
+    nodes.forEach(n => render(n));
+    drawConns();
+    document.getElementById('props').innerHTML = '<div class="props-empty">Select a node</div>';
+    updateRunSelBtn();
+}
+function undo() {
+    if (undoStack.length === 0) return;
+    redoStack.push({nodes: JSON.parse(JSON.stringify(nodes)), conns: JSON.parse(JSON.stringify(conns))});
+    restoreState(undoStack.pop());
+    status('Undo');
+}
+function redo() {
+    if (redoStack.length === 0) return;
+    undoStack.push({nodes: JSON.parse(JSON.stringify(nodes)), conns: JSON.parse(JSON.stringify(conns))});
+    restoreState(redoStack.pop());
+    status('Redo');
+}
+
+function copySelected() {
+    const ids = new Set();
+    if (sel) ids.add(sel.id);
+    selectedNodes.forEach(n => ids.add(n.id));
+    if (ids.size === 0) return;
+    const cn = nodes.filter(n => ids.has(n.id)).map(n => JSON.parse(JSON.stringify(n)));
+    const cc = conns.filter(c => ids.has(c.sn) && ids.has(c.tn)).map(c => ({...c}));
+    clipboard = {nodes: cn, conns: cc};
+    status('Copied ' + cn.length + ' node(s), ' + cc.length + ' connection(s)');
+}
+function cutSelected() {
+    copySelected();
+    if (!clipboard) return;
+    delSelected();
+    status('Cut ' + clipboard.nodes.length + ' node(s)');
+}
+function paste() {
+    if (!clipboard || clipboard.nodes.length === 0) return;
+    saveUndo();
+    const idMap = {};
+    clipboard.nodes.forEach(n => { idMap[n.id] = genId(); });
+    const newNodes = clipboard.nodes.map(n => {
+        const nn = JSON.parse(JSON.stringify(n));
+        nn.id = idMap[n.id]; nn.x += 30; nn.y += 30;
+        return nn;
+    });
+    const newConns = clipboard.conns.map(c => ({sn: idMap[c.sn], sp: c.sp, tn: idMap[c.tn], tp: c.tp}));
+    // Update clipboard offsets for next paste
+    clipboard.nodes.forEach(n => { n.x += 30; n.y += 30; });
+    newNodes.forEach(n => { nodes.push(n); render(n); });
+    newConns.forEach(c => conns.push(c));
+    drawConns();
+    // Select pasted nodes
+    desel(); clearMultiSelect();
+    if (newNodes.length === 1) { select(newNodes[0]); }
+    else { newNodes.forEach(n => { selectedNodes.add(n); document.getElementById(n.id).classList.add('multi-selected'); }); }
+    updateRunSelBtn();
+    status('Pasted ' + newNodes.length + ' node(s), ' + newConns.length + ' connection(s)');
+}
+
 function delNode() {
     if (!sel) return;
     conns = conns.filter(c => c.sn !== sel.id && c.tn !== sel.id);
@@ -932,12 +1031,33 @@ function delNode() {
     nodes = nodes.filter(n => n.id !== sel.id);
     drawConns(); desel(); status('Deleted');
 }
+function delSelected() {
+    const ids = new Set();
+    if (sel) ids.add(sel.id);
+    selectedNodes.forEach(n => ids.add(n.id));
+    if (ids.size === 0) return;
+    saveUndo();
+    conns = conns.filter(c => !ids.has(c.sn) && !ids.has(c.tn));
+    ids.forEach(id => document.getElementById(id)?.remove());
+    nodes = nodes.filter(n => !ids.has(n.id));
+    selectedNodes.clear();
+    drawConns(); desel(); status('Deleted ' + ids.size + ' node(s)');
+}
+document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); delSelected(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'Z' || e.key === 'y')) { e.preventDefault(); redo(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'c') { e.preventDefault(); copySelected(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'x') { e.preventDefault(); cutSelected(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'v') { e.preventDefault(); paste(); }
+});
 
 function startConn(dot) { dragC = {sn: dot.dataset.n, sp: dot.dataset.p, sd: dot.dataset.d}; }
 function endConn(dot) {
     if (!dragC || dragC.sd === dot.dataset.d) { cancelConn(); return; }
     const c = dragC.sd === 'out' ? {sn: dragC.sn, sp: dragC.sp, tn: dot.dataset.n, tp: dot.dataset.p} : {sn: dot.dataset.n, sp: dot.dataset.p, tn: dragC.sn, tp: dragC.sp};
-    if (!conns.some(x => x.sn === c.sn && x.sp === c.sp && x.tn === c.tn && x.tp === c.tp)) { conns.push(c); drawConns(); status('Connected'); }
+    if (!conns.some(x => x.sn === c.sn && x.sp === c.sp && x.tn === c.tn && x.tp === c.tp)) { saveUndo(); conns.push(c); drawConns(); status('Connected'); }
     dragC = null; remTemp();
 }
 function cancelConn() { dragC = null; remTemp(); }
@@ -949,9 +1069,9 @@ function updTemp(e) {
     const dot = document.querySelector('[data-n="' + dragC.sn + '"][data-p="' + dragC.sp + '"]');
     if (!dot) return;
     const r = dot.getBoundingClientRect(), ar = document.getElementById('canvas-area').getBoundingClientRect();
-    // Draw in screen coordinates relative to canvas-area
-    const x1 = r.left + 4 - ar.left;
-    const y1 = r.top + 4 - ar.top;
+    // Draw in screen coordinates relative to canvas-area, centered on dot
+    const x1 = r.left + r.width / 2 - ar.left;
+    const y1 = r.top + r.height / 2 - ar.top;
     const x2 = e.clientX - ar.left;
     const y2 = e.clientY - ar.top;
     const cx = 50 * zoom;
@@ -967,11 +1087,11 @@ function drawConns() {
         const d2 = document.querySelector('[data-n="' + c.tn + '"][data-p="' + c.tp + '"]');
         if (!d1 || !d2) return;
         const r1 = d1.getBoundingClientRect(), r2 = d2.getBoundingClientRect();
-        // Draw in screen coordinates relative to canvas-area
-        const x1 = r1.left + 4 - ar.left;
-        const y1 = r1.top + 4 - ar.top;
-        const x2 = r2.left + 4 - ar.left;
-        const y2 = r2.top + 4 - ar.top;
+        // Draw in screen coordinates relative to canvas-area, centered on dot
+        const x1 = r1.left + r1.width / 2 - ar.left;
+        const y1 = r1.top + r1.height / 2 - ar.top;
+        const x2 = r2.left + r2.width / 2 - ar.left;
+        const y2 = r2.top + r2.height / 2 - ar.top;
         const cx = 60 * zoom;  // Curve control offset scales with zoom
         const pathD = 'M' + x1 + ' ' + y1 + ' C' + (x1+cx) + ' ' + y1 + ',' + (x2-cx) + ' ' + y2 + ',' + x2 + ' ' + y2;
 
@@ -1200,6 +1320,7 @@ async function editInBlender(nodeId) {
                 mode: mode,
                 session_dir: existingSession,
                 project_dir: projectDir,
+                node_id: nodeId,
             }),
             signal: blenderAbortController.signal,
         });
@@ -1291,6 +1412,81 @@ async function abort() {
     }
 }
 
+async function relaunchServer() {
+    if (!confirm('Relaunch server? Unsaved changes will be lost.')) return;
+    status('Relaunching...');
+    try {
+        await fetch('/api/relaunch', {method: 'POST'});
+        // Poll until server is back
+        setTimeout(function poll() {
+            fetch('/api/nodes').then(() => location.reload()).catch(() => setTimeout(poll, 500));
+        }, 1000);
+    } catch (err) {
+        status('Relaunch failed');
+    }
+}
+
+async function executeNodeIds(startIds) {
+    if (isRunning) return;
+    // Walk upstream: find all source nodes via conns
+    const needed = new Set(startIds);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        conns.forEach(c => {
+            if (needed.has(c.tn) && !needed.has(c.sn)) { needed.add(c.sn); changed = true; }
+        });
+    }
+    // Build subgraph
+    const subNodes = nodes.filter(n => needed.has(n.id));
+    const subConns = conns.filter(c => needed.has(c.sn) && needed.has(c.tn));
+    isRunning = true;
+    document.getElementById('run-btn').style.display = 'none';
+    document.getElementById('run-sel-btn').style.display = 'none';
+    document.getElementById('abort-btn').style.display = '';
+    status('Running (' + subNodes.length + ' nodes)...');
+    const g = {
+        projectDir: projectDir,
+        nodes: subNodes.map(n => ({id: n.id, type: n.type, data: {params: n.params}})),
+        edges: subConns.map(c => ({source: c.sn, sourceHandle: c.sp, target: c.tn, targetHandle: c.tp}))
+    };
+    try {
+        const r = await fetch('/api/execute', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(g)});
+        const j = await r.json();
+        if (j.aborted) {
+            status('Aborted');
+            alert('Execution aborted by user.\\n\\n' + j.message);
+        } else if (j.success) {
+            status('Done!');
+            alert('Execution complete!\\n\\n' + j.message);
+        } else {
+            status('Error');
+            let errMsg = 'Errors:\\n';
+            j.errors.forEach(e => { errMsg += '• ' + e.type + ' (' + e.node_id + '): ' + e.error + '\\n'; });
+            errMsg += '\\nLog:\\n' + j.message;
+            alert(errMsg);
+        }
+    } catch (err) {
+        status('Error');
+        alert('Request failed: ' + err.message);
+    } finally {
+        isRunning = false;
+        document.getElementById('run-btn').style.display = '';
+        document.getElementById('abort-btn').style.display = 'none';
+        updateRunSelBtn();
+    }
+}
+async function executeSelected() {
+    const selIds = new Set();
+    if (sel) selIds.add(sel.id);
+    selectedNodes.forEach(n => selIds.add(n.id));
+    if (selIds.size === 0) { alert('No nodes selected'); return; }
+    await executeNodeIds(selIds);
+}
+async function executeNode(nodeId) {
+    await executeNodeIds(new Set([nodeId]));
+}
+
 function updateFileDisplay() {
     const el = document.getElementById('current-file');
     el.textContent = currentFileName || '(unsaved)';
@@ -1373,7 +1569,6 @@ async function load() {
 
             clearCanvas();
             nodes = d.nodes || []; conns = d.conns || [];
-            nid = Math.max(0, ...nodes.map(n => parseInt(n.id.slice(1)) || 0));
             nodes.forEach(render); drawConns();
 
             currentFileHandle = handle;
@@ -1405,7 +1600,6 @@ async function load() {
             const d = JSON.parse(ev.target.result);
             clearCanvas();
             nodes = d.nodes || []; conns = d.conns || [];
-            nid = Math.max(0, ...nodes.map(n => parseInt(n.id.slice(1)) || 0));
             nodes.forEach(render); drawConns();
 
             currentFileHandle = null;  // No handle with fallback method
@@ -1427,7 +1621,7 @@ async function load() {
 function clearCanvas() {
     document.getElementById('canvas').innerHTML = '';
     document.getElementById('svg-layer').innerHTML = '';
-    nodes = []; conns = []; nid = 0; pan = {x: 0, y: 0}; zoom = 1;
+    nodes = []; conns = []; selectedNodes.clear(); pan = {x: 0, y: 0}; zoom = 1;
     updTrans();
 }
 
@@ -1569,6 +1763,7 @@ async def blender_edit(request: dict):
     mode = request.get("mode", "single")
     existing_session = request.get("session_dir", "")
     project_dir = request.get("project_dir", "")
+    node_id = request.get("node_id", "")
 
     if not video_path:
         return {"success": False, "error": "No video path provided"}
@@ -1601,7 +1796,8 @@ async def blender_edit(request: dict):
     else:
         # Create new session directory in project or next to video
         base_dir = Path(project_dir) if project_dir else video_path.parent
-        session_dir = base_dir / ".vdg_blender" / video_path.stem
+        dir_name = f"{video_path.stem}_{node_id}" if node_id else video_path.stem
+        session_dir = base_dir / ".vdg_blender" / dir_name
         session_dir.mkdir(parents=True, exist_ok=True)
 
     session_json = session_dir / "session.json"
@@ -1692,6 +1888,19 @@ async def abort_execution():
     _abort_flag = True
     print("\n⚠ ABORT REQUESTED")
     return {"status": "abort requested"}
+
+
+@app.post("/api/relaunch")
+async def relaunch_server():
+    """Relaunch the server process with the same arguments."""
+    import os, sys, threading
+    print("\n🔄 RELAUNCHING SERVER...")
+    def _relaunch():
+        import time
+        time.sleep(0.3)  # Let the response flush
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=_relaunch, daemon=True).start()
+    return {"status": "relaunching"}
 
 
 def _run_graph_sync(graph: dict) -> dict:
@@ -3971,7 +4180,7 @@ def handle_blender_track(inputs: dict, params: dict, executor) -> dict:
     track_data = {}
     for frame, (x, y) in raw_data.items():
         track_data[frame] = {'x': x, 'y': y, 'normalized': True}
-    results['track_data'] = track_data
+    results['track01_data'] = track_data
     executor._log(f"    Track 1: {crv_files[0].name} ({len(track_data)} frames)")
 
     # Load second track if two_point mode and available
@@ -3980,10 +4189,10 @@ def handle_blender_track(inputs: dict, params: dict, executor) -> dict:
         track_data2 = {}
         for frame, (x, y) in raw_data2.items():
             track_data2[frame] = {'x': x, 'y': y, 'normalized': True}
-        results['track_data_2'] = track_data2
+        results['track02_data'] = track_data2
         executor._log(f"    Track 2: {crv_files[1].name} ({len(track_data2)} frames)")
     else:
-        results['track_data_2'] = {}
+        results['track02_data'] = {}
 
     return results
 
